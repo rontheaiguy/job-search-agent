@@ -1,6 +1,6 @@
 """
 Job Search Agent
-Pulls LinkedIn jobs via Apify, scores them with Claude, saves to Notion, notifies via Slack.
+Pulls jobs from Adzuna and LinkedIn, scores them with Claude, saves to Notion, notifies via Slack.
 """
 
 import os
@@ -21,129 +21,88 @@ NOTION_API_KEY         = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID     = os.getenv("NOTION_DATABASE_ID")
 SLACK_WEBHOOK_URL      = os.getenv("SLACK_WEBHOOK_URL")
 
-# ── Your resume text (baked in so Claude can compare them) ────────────────────
+# ── Condensed resume profiles (optimized for token efficiency) ───────────────
 
 RESUME_1PAGE = """
-ROUNAQ GANDHI
-(734) 985-8281 | rounaqgandhi@gmail.com | Chicago, IL | Open to Relocation
-https://www.linkedin.com/in/rounaqgandhi/
-(U.S. Citizen | No sponsorship required)
+Rounaq Gandhi | Product Manager | Chicago, IL | Open to Relocation | U.S. Citizen
+Experience: 2-3 years PM, 7+ years total in product/QA/engineering
 
-SUMMARY
-Results-oriented Product Manager with hands-on experience leading B2B SaaS and iOS mobile products across complex, high-stakes environments. Certified Scrum Product Owner (CSPO) and SAFe practitioner, I bring both Agile discipline and rigorous technical fluency - translating user insights and stakeholder needs into prioritized roadmaps that consistently deliver on business outcomes. Leveraging a Quality Engineering background, I collaborate effectively across engineering, design, and customer success to ship high-impact mobile features that drive double-digit gains in adoption and retention.
+CURRENT: Product Manager, Peek (B2B SaaS, iOS) — Apr 2024 to Present
+- Owns end-to-end product lifecycle: PRDs, user stories, BDD/Gherkin, backlog, GA launches
+- Led GTM for mobile POS barcode scanner — $18M GMV, key account renewals
+- Shipped Offline Mode for 35 enterprise customers, 2 weeks early, 22% adoption increase
+- 11.5% user adoption increase via search, filters, in-app notifications
+- 8% transaction adoption increase via store credit refunds on iOS
+- A/B testing with PostHog and Looker; OKRs/KPIs with cross-functional teams
+- Agile: sprint planning, backlog grooming, retrospectives
 
-CAREER OVERVIEW
+PRIOR: Senior QA Engineer, Peek (Apr 2022 - Mar 2024)
+PRIOR: Associate Product Owner / Senior Test Engineer, Emerson Automation Solutions (Oct 2017 - Mar 2022)
+- Pharmaceutical MES domain; IEC 62304, ISO 13485, 21 CFR Part 11
+- 200+ bugs resolved pre-launch; $4.2M revenue generated
 
-PEEK, Product Manager (04/24 - Present)
-1. Translated qualitative and quantitative user insights - including client interviews, NPS surveys, and support escalations - into prioritized product roadmaps that addressed critical pain points and measurably improved core business metrics.
-2. Owned the end-to-end product lifecycle for core features - from discovery and authoring PRDs, user stories, and BDD/Gherkin acceptance criteria to backlog prioritization and GA launches.
-3. Led GTM strategy and launch of mobile POS barcode scanner with real-time inventory tracking and full order management - serving as primary deal-closer for prospects with $18M in GMV & contributing to key account renewals.
-4. Acting as Product Owner, aligned cross-functional engineering and design teams around quarterly OKRs and KPIs - facilitating Agile ceremonies including sprint planning, backlog grooming, and retrospectives.
-5. Resolved critical field connectivity escalations across 35 enterprise customers by championing and shipping Offline mode feature, 2 weeks ahead of schedule, leading a 5-person cross-functional team & driving 22% increase in adoption.
-6. Conducted direct user interviews and partnered with onboarding and customer success teams to identify friction points - shipping targeted enhancements that reduced churn and drove 11.5% increase in user adoption.
-7. Conducted A/B testing on core user flows using PostHog and Looker - identifying and resolving key friction points that increased uplift in user retention.
-8. Increased transaction adoption by 8% by enabling store credit refunds on iOS, closing a competitive gap in payment flexibility.
-9. Reduced customer churn by redesigning iOS QR check-in and self-checkout kiosk workflows.
-10. Embedded AI tools including Claude, NotionAI into core PM workflows - streamlining PRD authoring, user story generation, defect tracking.
-
-PEEK, Senior Quality Engineer (04/22 - 03/24)
-- Worked directly with Product Managers and developers to translate complex customer needs into clear acceptance criteria.
-- Ran daily QA standups and managed production deployment schedule.
-- Ensured bug-free delivery of critical, deal-closing features for enterprise partners.
-
-EMERSON AUTOMATION SOLUTIONS, Associate Product Owner / Senior Software Test Engineer (10/17 - 03/22)
-- Led transition from Waterfall to Agile, acting as Scrum Master and Associate Product Owner.
-- Defined product test strategies for Syncade MES in pharmaceutical domain (IEC 62304, ISO 13485, 21 CFR Part 11).
-- Identified and resolved 200+ bugs before release; launch won customer satisfaction award and generated $4.2M in revenue.
-
-SKILLS & CERTIFICATIONS
-Software/Tools: JIRA, Confluence, Claude, NotionAI, Pendo, Mixpanel, Looker, Figma, Notion, Loveable, PostHog
-Methodologies: Agile-Scrum, Kanban & Waterfall
-Certifications: SAFe Agilist, CSPO, Advanced CSPO (A-CSPO), CSM
-Products: Roadmapping, User Research, PRDs, A/B Testing, Prioritization, GTM, OKRs, Stakeholder Management
+CERTIFICATIONS: SAFe Agilist, CSPO, A-CSPO, CSM
+TOOLS: Jira, Confluence, Figma, Pendo, Mixpanel, Looker, PostHog, NotionAI, Claude, Loveable
+SKILLS: Roadmapping, PRDs, User Research, A/B Testing, GTM, OKRs, Stakeholder Management, Prioritization
+DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software
+FORMAT: Concise — best for APM/PM roles requiring a sharp, focused profile
 """.strip()
 
 RESUME_2PAGE = """
-ROUNAQ GANDHI
-(734) 985-8281 | rounaqgandhi@gmail.com | Chicago, IL | Open to Relocation
-https://www.linkedin.com/in/rounaqgandhi
-(U.S. Citizen | No sponsorship required)
+Rounaq Gandhi | Product Manager | Chicago, IL | Open to Relocation | U.S. Citizen
+Experience: 2-3 years PM, 7+ years total in product/QA/engineering
 
-SUMMARY
-Results-oriented Product Manager with hands-on experience leading B2B SaaS and iOS mobile products across complex, high-stakes environments. Certified Scrum Product Owner (CSPO) and SAFe practitioner, I bring both Agile discipline and rigorous technical fluency - translating user insights and stakeholder needs into prioritized roadmaps that consistently deliver on business outcomes. Leveraging a Quality Engineering background, I collaborate effectively across engineering, design, and customer success to ship high-impact mobile features that drive double-digit gains in adoption and retention.
+CURRENT: Product Manager / Product Owner, Peek (B2B SaaS, iOS) — Apr 2024 to Present
+- Full product lifecycle: PRDs, user stories, BDD/Gherkin, backlog, GA launches
+- GTM for mobile POS barcode scanner — $18M GMV, key account renewals
+- Offline Mode shipped 2 weeks early for 35 enterprise customers — 22% adoption increase
+- 11.5% user adoption increase; 8% transaction adoption increase on iOS
+- A/B testing with PostHog and Looker; OKRs/KPIs alignment
+- Independently designed and shipped low-complexity features, reducing design bottlenecks
+- Agile: sprint planning, backlog grooming, retrospectives, post-launch demos
 
-CAREER OVERVIEW
+PRIOR: Senior QA Engineer, Peek (Apr 2022 - Mar 2024)
+- Playwright test automation via TestCollab; shift-left testing; payment integrations
 
-PEEK, Product Manager / Product Owner (04/24 - Present)
-- Translated qualitative and quantitative user insights into prioritized product roadmaps.
-- Owned the end-to-end product lifecycle for core features - from discovery and authoring PRDs, user stories, and BDD/Gherkin acceptance criteria to backlog prioritization and GA launches.
-- Led GTM strategy and launch of mobile POS barcode scanner with $18M in GMV, contributing to key account renewals.
-- Aligned cross-functional engineering and design teams around quarterly OKRs and KPIs.
-- Resolved critical field connectivity escalations across 35 enterprise customers by shipping Offline Mode feature 2 weeks ahead of schedule, driving 22% increase in feature adoption.
-- Shipped targeted enhancements including search, filters, and in-app notifications that reduced churn and drove 11.5% increase in user adoption.
-- Conducted A/B testing using PostHog and Looker to identify friction points and improve user retention.
-- Increased transaction adoption by 8% by enabling store credit refunds on iOS.
-- Reduced customer churn by redesigning iOS QR check-in and self-checkout kiosk workflows.
-- Accelerated engineering velocity by independently designing, prototyping, and shipping low-complexity features and UI bug fixes.
-- Drove GTM strategy for quarterly feature releases and led post-launch demonstrations.
-- Embedded AI tools including Claude, NotionAI into core PM workflows.
+PRIOR: Associate Product Owner / Senior Test Engineer, Emerson Automation Solutions (Oct 2017 - Mar 2022)
+- Pharmaceutical MES (Syncade); IEC 62364, ISO 13485, 21 CFR Part 11
+- 40% reduction in manual testing; $4.2M revenue from launch; Best Employee 7x
 
-PEEK, Senior Quality Engineer (04/22 - 03/24)
-- Translated complex customer needs into clear acceptance criteria.
-- Ran daily QA standups and managed production deployment schedule.
-- Ensured bug-free delivery of critical features including payment integrations, subscription billing, and B2B inventory controls.
-- Led migration of manual test cases into TestCollab to establish Playwright test automation.
-- Championed shift-left testing strategy during backlog refinement.
+PRIOR: Software Test Analyst, Cognizant (Aug 2015 - Sep 2017) — Financial & Automotive
 
-EMERSON AUTOMATION SOLUTIONS, Associate Product Owner / Senior Software Test Engineer (10/17 - 03/22)
-- Led Waterfall-to-Agile transition as Scrum Master and Associate Product Owner.
-- Defined end-to-end product strategies for Syncade MES in pharmaceutical domain (IEC 62364, ISO 13485, 21 CFR Part 11).
-- Identified and resolved 200+ bugs; launch won customer satisfaction award and generated $4.2M in revenue.
-- Reduced manual testing overhead by 40% through automated test scripts.
-- Recognized as Best Employee 7 times (2018-2020).
-
-COGNIZANT TECHNOLOGY SOLUTIONS, Software Test Analyst (08/15 - 09/17)
-- Acted as Scrum Master, facilitating daily stand-ups and Agile estimation.
-- Managed offshore testing teams and led organizational expansion of new test unit.
-- Partnered with Product Managers and engineering teams to translate business requirements into testing deliverables.
-
-SKILLS & CERTIFICATIONS
-Software/Tools: JIRA, Confluence, Claude, NotionAI, Loveable, Pendo, Mixpanel, Looker, Figma, Notion, PostHog, TestCollab, TFS, HP ALM, XMLSpy, VersionOne, Bugzilla, VMware, BeyondCompare
-Methodologies: Agile-Scrum, Kanban & Waterfall
-Certifications: SAFe Agilist, CSPO, Advanced CSPO (A-CSPO), CSM
-Core PM Competencies: Roadmapping, User Research, PRDs, User Stories, A/B Testing, Prioritization (RICE, Impact vs Effort), GTM Strategy, OKRs, KPIs, Sprint Planning, Stakeholder Management, BDD/Gherkin Acceptance Criteria, Mobile Apps (iOS/Android), Rapid Prototyping, SQL-based Data Analysis
-
-EDUCATION
-Masters in Computer & Electrical Engineering, New Jersey Institute of Technology, NJ, USA (GPA 3.7/4.0)
-Bachelors in Electronics and Telecommunications, University of Pune, India
+EDUCATION: MS Computer & Electrical Engineering, NJIT (GPA 3.7); BS Electronics & Telecom, Pune
+CERTIFICATIONS: SAFe Agilist, CSPO, A-CSPO, CSM
+TOOLS: Jira, Confluence, Figma, Pendo, Mixpanel, Looker, PostHog, TestCollab, TFS, NotionAI, Claude
+SKILLS: Roadmapping, PRDs, User Stories, A/B Testing, GTM, OKRs, Sprint Planning, Stakeholder Management, RICE Prioritization, BDD/Gherkin, Mobile Apps (iOS/Android), Rapid Prototyping, SQL
+DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software, Pharmaceutical MES, Financial, Automotive
+FORMAT: Detailed — best for senior roles or companies valuing breadth of experience
 """.strip()
 
 # ── Job titles to search ──────────────────────────────────────────────────────
 
 JOB_TITLES = [
     "Product Manager",
+    "Senior Product Manager",
     "Associate Product Manager",
     "Product Owner",
     "Senior Product Owner",
 ]
 
-# ── Step 1: Pull jobs from Adzuna ─────────────────────────────────────────────
+# ── Step 1: Pull jobs from Adzuna + LinkedIn ──────────────────────────────────
 
 def fetch_jobs_from_adzuna():
     """
-    Calls the Adzuna Jobs API for each job title with pagination.
+    Calls the Adzuna Jobs API for each job title.
     Returns a combined list of job listings.
     """
     print("🔍 Fetching jobs from Adzuna...")
-
     all_jobs = []
 
     for title in JOB_TITLES:
         print(f"  → Searching: {title}")
         title_jobs = []
 
-        # Pull up to 10 pages × 50 results = 500 per title
-        for page in range(1, 11):
+        for page in range(1, 6):  # 5 pages × 50 = 250 per title
             url = "https://api.adzuna.com/v1/api/jobs/us/search/" + str(page)
             params = {
                 "app_id":           ADZUNA_APP_ID,
@@ -151,7 +110,7 @@ def fetch_jobs_from_adzuna():
                 "what":             title,
                 "where":            "United States",
                 "results_per_page": 50,
-                "max_days_old":     5,
+                "max_days_old":     1,  # last 24 hours
                 "sort_by":          "date",
             }
 
@@ -160,48 +119,144 @@ def fetch_jobs_from_adzuna():
                 resp.raise_for_status()
                 data = resp.json()
                 jobs = data.get("results", [])
-
                 if not jobs:
-                    break  # no more results, stop paginating
-
+                    break
                 title_jobs.extend(jobs)
-
-                # If we got fewer than 50, there are no more pages
                 if len(jobs) < 50:
                     break
-
             except Exception as e:
                 print(f"     ⚠️  Adzuna error on page {page} for '{title}': {e}")
                 break
 
-            time.sleep(0.5)  # small pause between pages
+            time.sleep(0.5)
 
         print(f"     Found {len(title_jobs)} listings for '{title}'")
         all_jobs.extend(title_jobs)
         time.sleep(1)
 
-    print(f"✅ Total raw listings fetched: {len(all_jobs)}")
+    print(f"✅ Adzuna total: {len(all_jobs)}")
+    return all_jobs
+
+
+def fetch_jobs_from_linkedin():
+    """
+    Scrapes LinkedIn's public guest API for each job title.
+    No login, no API key, completely free.
+    Returns a combined list of job listings.
+    """
+    import re
+    from bs4 import BeautifulSoup
+
+    print("🔍 Fetching jobs from LinkedIn...")
+    all_jobs = []
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    # f_TPR=r43200 = posted in last 12 hours (43200 seconds)
+    TIME_FILTER = "r43200"
+
+    for title in JOB_TITLES:
+        print(f"  → Searching LinkedIn: {title}")
+        title_jobs = []
+        search_title = title.replace(" ", "%20")
+
+        # Pull up to 5 pages × 10 results = 50 per title
+        for page in range(5):
+            start = page * 10
+            url = (
+                f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                f"?keywords={search_title}"
+                f"&location=United%20States"
+                f"&f_TPR={TIME_FILTER}"
+                f"&start={start}"
+            )
+
+            try:
+                resp = requests.get(url, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    break
+
+                # Extract job IDs from HTML
+                job_ids = re.findall(
+                    r'data-entity-urn="urn:li:jobPosting:(\d+)"', resp.text
+                )
+                if not job_ids:
+                    break
+
+                # Fetch details for each job ID
+                for job_id in job_ids:
+                    detail_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+                    try:
+                        detail_resp = requests.get(detail_url, headers=headers, timeout=15)
+                        if detail_resp.status_code != 200:
+                            continue
+
+                        soup = BeautifulSoup(detail_resp.text, "html.parser")
+
+                        # Extract fields
+                        title_el = soup.find("h2", class_=lambda x: x and "top-card-layout__title" in x)
+                        company_el = soup.find("a", class_=lambda x: x and "topcard__org-name-link" in x)
+                        location_el = soup.find("span", class_=lambda x: x and "topcard__flavor--bullet" in x)
+                        desc_el = soup.find("div", class_=lambda x: x and "description__text" in x)
+
+                        job_title = title_el.get_text(strip=True) if title_el else ""
+                        company = company_el.get_text(strip=True) if company_el else ""
+                        location = location_el.get_text(strip=True) if location_el else ""
+                        description = desc_el.get_text(strip=True)[:1500] if desc_el else ""
+                        job_link = f"https://www.linkedin.com/jobs/view/{job_id}/"
+
+                        if not job_title:
+                            continue
+
+                        title_jobs.append({
+                            "title":       job_title,
+                            "company":     {"display_name": company},
+                            "location":    {"display_name": location},
+                            "description": description,
+                            "redirect_url": job_link,
+                            "created":     datetime.now(timezone.utc).isoformat(),
+                            "source":      "LinkedIn",
+                        })
+
+                        time.sleep(0.3)  # polite delay between job detail requests
+
+                    except Exception as e:
+                        continue
+
+                time.sleep(1)
+
+            except Exception as e:
+                print(f"     ⚠️  LinkedIn error on page {page} for '{title}': {e}")
+                break
+
+        print(f"     Found {len(title_jobs)} listings for '{title}'")
+        all_jobs.extend(title_jobs)
+        time.sleep(2)
+
+    print(f"✅ LinkedIn total: {len(all_jobs)}")
     return all_jobs
 
 # ── Step 2: Filter — remove old and duplicate listings ───────────────────────
 
-def is_within_10_days(job):
+def is_recent(job):
     """
-    Returns True if the job was posted within the last 10 days.
-    Handles missing or unparseable dates gracefully.
+    Returns True if the job was posted within the last 2 days.
+    Acts as a safety net — Adzuna and LinkedIn already filter by time,
+    but this catches any stragglers with old dates.
     """
     raw_date = job.get("created") or job.get("postedAt") or ""
     if not raw_date:
         return True  # if no date, keep the listing to be safe
 
     try:
-        # Try parsing ISO format date strings
         if "T" in raw_date:
             posted = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
         else:
             posted = datetime.strptime(raw_date[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=10)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=2)
         return posted >= cutoff
     except Exception:
         return True  # if date parsing fails, keep the listing
@@ -235,7 +290,7 @@ def get_existing_notion_links():
 
         for page in data.get("results", []):
             props = page.get("properties", {})
-            link_prop = props.get("JD link", {})
+            link_prop = props.get("Job link", {})
             # Notion URL fields return a list of rich_text or a url type
             if link_prop.get("type") == "url":
                 link_val = link_prop.get("url") or ""
@@ -254,58 +309,28 @@ def get_existing_notion_links():
 
 def is_relevant_title(job):
     """
-    Returns True only if the job title matches our target roles.
-    Filters out irrelevant jobs like Software Engineer, QA, etc.
+    Only allows exact PM/PO role titles. Rejects everything else.
     """
-    title = job.get("title", "").lower()
+    title = job.get("title", "").lower().strip()
 
-    # Must contain at least one of these phrases
+    # Must contain one of these core phrases
     allowed = [
         "product manager",
+        "senior product manager",
         "product owner",
-        "associate product",
+        "associate product manager",
         "senior product owner",
-        "sr. product",
-        "sr product",
+        "sr. product manager",
+        "sr product manager",
+        "staff product manager",
+        "principal product manager",
+        "group product manager",
+        "director of product",
+        "head of product",
+        "vp of product",
+        "vp, product",
     ]
 
-    # Must NOT contain these — filters out false positives
-    blocked = [
-        "software engineer",
-        "software developer",
-        "qa engineer",
-        "quality engineer",
-        "test engineer",
-        "data engineer",
-        "devops",
-        "ui/ux",
-        "ux designer",
-        "scrum master",
-        "business analyst",
-        "technical writer",
-        "project manager",
-        "program manager",
-        "marketing manager",
-        "sales manager",
-        "account manager",
-        "security",
-        "architect",
-        "java developer",
-        "python developer",
-        "full stack",
-        "frontend",
-        "backend",
-        "missile",
-        "device engineer",
-        "network engineer",
-    ]
-
-    # Check blocked first
-    for b in blocked:
-        if b in title:
-            return False
-
-    # Then check allowed
     for a in allowed:
         if a in title:
             return True
@@ -345,8 +370,8 @@ def filter_jobs(raw_jobs, existing_links):
         if link in existing_links:
             continue
 
-        # Skip if older than 10 days
-        if not is_within_10_days(job):
+        # Skip if older than 2 days
+        if not is_recent(job):
             continue
 
         seen_links.add(link)
@@ -369,9 +394,9 @@ def analyze_job_with_claude(job):
     description  = job.get("description") or ""
     location_raw = job.get("location", {}).get("display_name") or ""
 
-    # Truncate very long descriptions to avoid token overload
-    if len(description) > 6000:
-        description = description[:6000] + "\n...[truncated]"
+    # Truncate long descriptions to reduce token usage
+    if len(description) > 1500:
+        description = description[:1500] + "\n...[truncated]"
 
     prompt = f"""
 You are a job search assistant helping a Product Manager named Rounaq Gandhi analyze a job listing.
@@ -399,7 +424,7 @@ Please analyze this job listing and respond ONLY with a valid JSON object — no
   "industry": "<your best guess at the industry from the JD, e.g. B2B SaaS, FinTech, HealthTech, Enterprise Software, eCommerce, etc.>",
   "match_percent": <integer from 0 to 100 representing how well Rounaq's background matches this JD>,
   "key_skills": ["<skill 1>", "<skill 2>", "<skill 3>"],
-  "resume_recommendation": "<either '1-page' or '2-page', with a one-sentence reason>",
+  "resume_recommendation": "<either 'Concise' or 'Detailed', with a one-sentence reason>",
   "notes": "<2-3 sentences: why this role is or isn't a strong fit, any red flags, and anything Rounaq should customize in his application>"
 }}
 
@@ -407,7 +432,7 @@ Rules:
 - key_skills: list the top 3-5 skills the JD emphasizes most (pull from the JD text, not the resume)
 - match_percent: base this on how Rounaq's actual experience, certifications, tools, and domain match what the JD asks for
 - match_percent tiers: Low = 0-30, Medium = 31-50, High = 51-80, Top = 81-100
-- resume_recommendation: recommend 1-page for roles that want sharp, concise APM/PM profiles; recommend 2-page for senior/complex roles that value breadth of experience
+- resume_recommendation: recommend 'Concise' for roles that want sharp, focused APM/PM profiles; recommend 'Detailed' for senior/complex roles that value breadth of experience
 - notes: be specific and actionable
 """.strip()
 
@@ -519,7 +544,7 @@ def detect_source(link):
 
 def get_next_serial_number():
     """
-    Finds the highest existing Sr. number in Notion and returns the next one.
+    Counts existing rows in Notion and returns the next serial number.
     """
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -528,7 +553,7 @@ def get_next_serial_number():
         "Content-Type": "application/json",
     }
 
-    max_sr = 0
+    total = 0
     has_more = True
     next_cursor = None
 
@@ -536,30 +561,14 @@ def get_next_serial_number():
         body = {"page_size": 100}
         if next_cursor:
             body["start_cursor"] = next_cursor
-
         resp = requests.post(url, headers=headers, json=body, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-
-        for page in data.get("results", []):
-            props = page.get("properties", {})
-            sr_prop = props.get("Sr.", {})
-            # Sr. might be a number or rich_text field
-            if sr_prop.get("type") == "number":
-                val = sr_prop.get("number") or 0
-            else:
-                rich = sr_prop.get("rich_text", [])
-                try:
-                    val = int(rich[0]["text"]["content"]) if rich else 0
-                except (ValueError, IndexError):
-                    val = 0
-            if val > max_sr:
-                max_sr = val
-
+        total += len(data.get("results", []))
         has_more = data.get("has_more", False)
         next_cursor = data.get("next_cursor")
 
-    return max_sr + 1
+    return total + 1
 
 
 def save_to_notion(job, analysis, serial_number):
@@ -589,10 +598,10 @@ def save_to_notion(job, analysis, serial_number):
     tier                = match_tier(match_pct)
     key_skills          = analysis.get("key_skills", [])
     resume_rec_raw      = analysis.get("resume_recommendation", "1-page")
-    if "2-page" in resume_rec_raw or "2 page" in resume_rec_raw.lower():
-        resume_rec = "2-page"
+    if "2-page" in resume_rec_raw or "2 page" in resume_rec_raw.lower() or "detailed" in resume_rec_raw.lower():
+        resume_rec = "Detailed"
     else:
-        resume_rec = "1-page"
+        resume_rec = "Concise"
     notes_text          = analysis.get("notes", "")
     mode                = work_mode(location_raw)
     source              = detect_source(link)
@@ -600,7 +609,10 @@ def save_to_notion(job, analysis, serial_number):
     # Build the Notion page properties payload
     properties = {
         "Job title": {
-            "title": [{"text": {"content": title}}]
+            "rich_text": [{"text": {"content": title}}]
+        },
+        "Sr.": {
+            "rich_text": [{"text": {"content": str(serial_number)}}]
         },
         "Company name": {
             "rich_text": [{"text": {"content": company}}]
@@ -612,10 +624,10 @@ def save_to_notion(job, analysis, serial_number):
             "select": {"name": mode}
         },
         "JD match %": {
-            "select": {"name": tier}
+            "rich_text": [{"text": {"content": tier}}]
         },
         "Job link": {
-            "url": link if link else None
+            "rich_text": [{"text": {"content": link if link else ""}}]
         },
         "Key Skills Needed": {
             "rich_text": [{"text": {"content": ", ".join(key_skills)}}]
@@ -623,16 +635,16 @@ def save_to_notion(job, analysis, serial_number):
         "Resume used": {
             "select": {"name": resume_rec}
         },
-        "Notes": {
-            "rich_text": [{"text": {"content": notes_text}}]
-        },
         "Source": {
             "rich_text": [{"text": {"content": source}}]
         },
+        "Notes": {
+            "title": [{"text": {"content": notes_text}}]
+        },
+        "Status": {
+            "select": {"name": "To apply"}
+        },
     }
-
-    # Add serial number
-    properties["Sr."] = {"number": serial_number}
 
     # Add date posted if available
     if date_str:
@@ -724,6 +736,99 @@ def send_slack_summary(saved_jobs):
     else:
         print(f"⚠️  Slack error: {resp.status_code} — {resp.text}")
 
+# ── Estimated balance tracker ─────────────────────────────────────────────────
+
+COST_PER_JOB       = 0.018   # actual cost per job from first run
+LOW_BALANCE_THRESHOLD = 1.00  # warn when estimated balance drops below $1
+BALANCE_FILE       = os.path.join(os.path.dirname(__file__), ".claude_balance")
+
+
+def load_balance():
+    """Load estimated remaining balance from local file."""
+    try:
+        with open(BALANCE_FILE, "r") as f:
+            return float(f.read().strip())
+    except Exception:
+        return None
+
+
+def save_balance(balance):
+    """Save estimated remaining balance to local file."""
+    try:
+        with open(BALANCE_FILE, "w") as f:
+            f.write(str(round(balance, 4)))
+    except Exception as e:
+        print(f"⚠️  Could not save balance file: {e}")
+
+
+def update_balance_and_warn(jobs_analyzed):
+    """
+    Deducts estimated cost from balance and sends Slack warning if below $1.
+    """
+    balance = load_balance()
+    if balance is None:
+        print("ℹ️  No balance file found — skipping balance check.")
+        print("    To enable: create .claude_balance file with your current credit amount.")
+        return
+
+    cost_this_run = jobs_analyzed * COST_PER_JOB
+    new_balance = balance - cost_this_run
+    save_balance(new_balance)
+
+    print(f"💰 Estimated Claude balance: ${new_balance:.2f} (spent ${cost_this_run:.2f} this run)")
+
+    if new_balance < LOW_BALANCE_THRESHOLD:
+        warning = (
+            f"🚨🚨🚨 *CLAUDE CREDITS RUNNING LOW* 🚨🚨🚨\n\n"
+            f"💸 Estimated remaining balance: *${new_balance:.2f}*\n"
+            f"⚠️ Threshold: ${LOW_BALANCE_THRESHOLD:.2f}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔴 *Action required:* Reload credits now or the agent will stop working.\n"
+            f"👉 https://console.anthropic.com/settings/billing\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"_After reloading, update your balance file:_\n"
+            f"`echo \"YOUR_NEW_AMOUNT\" > .claude_balance`"
+        )
+        requests.post(SLACK_WEBHOOK_URL, json={"text": warning}, timeout=10)
+        print(f"⚠️  Low balance warning sent to Slack (${new_balance:.2f} remaining)")
+
+
+# ── Claude balance check ─────────────────────────────────────────────────────
+
+def check_claude_balance():
+    """
+    Makes a minimal Claude API call to check if credits are available.
+    Sends a Slack warning if the API returns a credit error.
+    """
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        print("✅ Claude API credits available.")
+        return True
+    except Exception as e:
+        error_str = str(e).lower()
+        if "credit" in error_str or "balance" in error_str or "billing" in error_str or "402" in error_str:
+            warning = (
+                "🛑🛑🛑 *CLAUDE CREDITS EXHAUSTED* 🛑🛑🛑\n\n"
+                "💀 Your Anthropic API balance has hit $0.\n"
+                "❌ *Today's job analysis did NOT run.*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "👉 Reload now: https://console.anthropic.com/settings/billing\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "_After reloading, update your balance file:_\n"
+                "`echo \"YOUR_NEW_AMOUNT\" > .claude_balance`"
+            )
+            requests.post(SLACK_WEBHOOK_URL, json={"text": warning}, timeout=10)
+            print("⚠️  Claude credits exhausted — Slack warning sent.")
+        else:
+            print(f"⚠️  Claude API check failed: {e}")
+        return False
+
+
 # ── Main orchestrator ─────────────────────────────────────────────────────────
 
 def main():
@@ -732,8 +837,16 @@ def main():
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("========================================\n")
 
-    # 1. Pull raw jobs from Adzuna
-    raw_jobs = fetch_jobs_from_adzuna()
+    # 0. Check Claude API credits before doing anything
+    if not check_claude_balance():
+        print("❌ Stopping run — Claude credits unavailable.")
+        return
+
+    # 1. Pull raw jobs from Adzuna + LinkedIn
+    adzuna_jobs = fetch_jobs_from_adzuna()
+    linkedin_jobs = fetch_jobs_from_linkedin()
+    raw_jobs = adzuna_jobs + linkedin_jobs
+    print(f"\n📦 Combined total: {len(raw_jobs)} raw listings ({len(adzuna_jobs)} Adzuna + {len(linkedin_jobs)} LinkedIn)")
 
     # 2. Get existing Notion links to skip duplicates
     existing_links = get_existing_notion_links()
@@ -785,6 +898,9 @@ def main():
     # 5. Send Slack summary
     print(f"\n📨 Sending Slack summary ({len(saved_jobs)} listings saved)...")
     send_slack_summary(saved_jobs)
+
+    # 6. Update estimated balance and warn if low
+    update_balance_and_warn(len(saved_jobs))
 
     print("\n========================================")
     print(f"  Run complete. {len(saved_jobs)} new listings saved.")
