@@ -4,11 +4,13 @@ Pulls jobs from Adzuna and LinkedIn, scores them with Claude, saves to Notion, n
 """
 
 import os
+import re
 import json
 import time
 import requests
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 import anthropic
 
 # ── Load environment variables from .env ─────────────────────────────────────
@@ -20,63 +22,6 @@ ANTHROPIC_API_KEY      = os.getenv("ANTHROPIC_API_KEY")
 NOTION_API_KEY         = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID     = os.getenv("NOTION_DATABASE_ID")
 SLACK_WEBHOOK_URL      = os.getenv("SLACK_WEBHOOK_URL")
-
-# ── Condensed resume profiles (optimized for token efficiency) ───────────────
-
-RESUME_1PAGE = """
-Rounaq Gandhi | Product Manager | Chicago, IL | Open to Relocation | U.S. Citizen
-Experience: 2-3 years PM, 7+ years total in product/QA/engineering
-
-CURRENT: Product Manager, Peek (B2B SaaS, iOS) — Apr 2024 to Present
-- Owns end-to-end product lifecycle: PRDs, user stories, BDD/Gherkin, backlog, GA launches
-- Led GTM for mobile POS barcode scanner — $18M GMV, key account renewals
-- Shipped Offline Mode for 35 enterprise customers, 2 weeks early, 22% adoption increase
-- 11.5% user adoption increase via search, filters, in-app notifications
-- 8% transaction adoption increase via store credit refunds on iOS
-- A/B testing with PostHog and Looker; OKRs/KPIs with cross-functional teams
-- Agile: sprint planning, backlog grooming, retrospectives
-
-PRIOR: Senior QA Engineer, Peek (Apr 2022 - Mar 2024)
-PRIOR: Associate Product Owner / Senior Test Engineer, Emerson Automation Solutions (Oct 2017 - Mar 2022)
-- Pharmaceutical MES domain; IEC 62304, ISO 13485, 21 CFR Part 11
-- 200+ bugs resolved pre-launch; $4.2M revenue generated
-
-CERTIFICATIONS: SAFe Agilist, CSPO, A-CSPO, CSM
-TOOLS: Jira, Confluence, Figma, Pendo, Mixpanel, Looker, PostHog, NotionAI, Claude, Loveable
-SKILLS: Roadmapping, PRDs, User Research, A/B Testing, GTM, OKRs, Stakeholder Management, Prioritization
-DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software
-FORMAT: Concise — best for APM/PM roles requiring a sharp, focused profile
-""".strip()
-
-RESUME_2PAGE = """
-Rounaq Gandhi | Product Manager | Chicago, IL | Open to Relocation | U.S. Citizen
-Experience: 2-3 years PM, 7+ years total in product/QA/engineering
-
-CURRENT: Product Manager / Product Owner, Peek (B2B SaaS, iOS) — Apr 2024 to Present
-- Full product lifecycle: PRDs, user stories, BDD/Gherkin, backlog, GA launches
-- GTM for mobile POS barcode scanner — $18M GMV, key account renewals
-- Offline Mode shipped 2 weeks early for 35 enterprise customers — 22% adoption increase
-- 11.5% user adoption increase; 8% transaction adoption increase on iOS
-- A/B testing with PostHog and Looker; OKRs/KPIs alignment
-- Independently designed and shipped low-complexity features, reducing design bottlenecks
-- Agile: sprint planning, backlog grooming, retrospectives, post-launch demos
-
-PRIOR: Senior QA Engineer, Peek (Apr 2022 - Mar 2024)
-- Playwright test automation via TestCollab; shift-left testing; payment integrations
-
-PRIOR: Associate Product Owner / Senior Test Engineer, Emerson Automation Solutions (Oct 2017 - Mar 2022)
-- Pharmaceutical MES (Syncade); IEC 62364, ISO 13485, 21 CFR Part 11
-- 40% reduction in manual testing; $4.2M revenue from launch; Best Employee 7x
-
-PRIOR: Software Test Analyst, Cognizant (Aug 2015 - Sep 2017) — Financial & Automotive
-
-EDUCATION: MS Computer & Electrical Engineering, NJIT (GPA 3.7); BS Electronics & Telecom, Pune
-CERTIFICATIONS: SAFe Agilist, CSPO, A-CSPO, CSM
-TOOLS: Jira, Confluence, Figma, Pendo, Mixpanel, Looker, PostHog, TestCollab, TFS, NotionAI, Claude
-SKILLS: Roadmapping, PRDs, User Stories, A/B Testing, GTM, OKRs, Sprint Planning, Stakeholder Management, RICE Prioritization, BDD/Gherkin, Mobile Apps (iOS/Android), Rapid Prototyping, SQL
-DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software, Pharmaceutical MES, Financial, Automotive
-FORMAT: Detailed — best for senior roles or companies valuing breadth of experience
-""".strip()
 
 # ── Job titles to search ──────────────────────────────────────────────────────
 
@@ -102,7 +47,7 @@ def fetch_jobs_from_adzuna():
         print(f"  → Searching: {title}")
         title_jobs = []
 
-        for page in range(1, 6):  # 5 pages × 50 = 250 per title
+        for page in range(1, 3):  # 2 pages × 50 = 100 per title
             url = "https://api.adzuna.com/v1/api/jobs/us/search/" + str(page)
             params = {
                 "app_id":           ADZUNA_APP_ID,
@@ -144,9 +89,6 @@ def fetch_jobs_from_linkedin():
     No login, no API key, completely free.
     Returns a combined list of job listings.
     """
-    import re
-    from bs4 import BeautifulSoup
-
     print("🔍 Fetching jobs from LinkedIn...")
     all_jobs = []
 
@@ -162,8 +104,8 @@ def fetch_jobs_from_linkedin():
         title_jobs = []
         search_title = title.replace(" ", "%20")
 
-        # Pull up to 5 pages × 10 results = 50 per title
-        for page in range(5):
+        # Pull up to 2 pages × 10 results = 20 per title
+        for page in range(2):
             start = page * 10
             url = (
                 f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
@@ -383,100 +325,130 @@ def filter_jobs(raw_jobs, existing_links):
 
 # ── Step 3: Claude analysis ───────────────────────────────────────────────────
 
+RESUME_CONCISE = """
+Rounaq Gandhi | Product Manager | Chicago, IL | Open to Relocation | U.S. Citizen
+Experience: 2-3 years PM, 7+ years total in product/QA/engineering
+
+CURRENT: Product Manager, Peek (B2B SaaS, iOS) — Apr 2024 to Present
+- End-to-end product lifecycle: PRDs, user stories, BDD/Gherkin, backlog, GA launches
+- GTM for mobile POS barcode scanner — $18M GMV, key account renewals
+- Shipped Offline Mode for 35 enterprise customers, 2 weeks early, 22% adoption increase
+- 11.5% user adoption increase; 8% transaction adoption increase on iOS
+- A/B testing with PostHog and Looker; OKRs/KPIs with cross-functional teams
+- Agile: sprint planning, backlog grooming, retrospectives
+
+PRIOR: Senior QA Engineer, Peek (Apr 2022 - Mar 2024)
+PRIOR: Associate Product Owner / Senior Test Engineer, Emerson (Oct 2017 - Mar 2022)
+- Pharmaceutical MES; IEC 62304, ISO 13485, 21 CFR Part 11; $4.2M revenue generated
+
+CERTIFICATIONS: SAFe Agilist, CSPO, A-CSPO, CSM
+TOOLS: Jira, Confluence, Figma, Pendo, Mixpanel, Looker, PostHog, NotionAI
+SKILLS: Roadmapping, PRDs, User Research, A/B Testing, GTM, OKRs, Stakeholder Management
+DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software
+""".strip()
+
+RESUME_DETAILED = """
+Rounaq Gandhi | Product Manager | Chicago, IL | Open to Relocation | U.S. Citizen
+Experience: 2-3 years PM, 7+ years total in product/QA/engineering
+
+CURRENT: Product Manager / Product Owner, Peek (B2B SaaS, iOS) — Apr 2024 to Present
+- Full product lifecycle: PRDs, user stories, BDD/Gherkin, backlog, GA launches
+- GTM for mobile POS barcode scanner — $18M GMV, key account renewals
+- Offline Mode shipped 2 weeks early for 35 enterprise customers — 22% adoption increase
+- 11.5% user adoption increase; 8% transaction adoption increase on iOS
+- A/B testing with PostHog and Looker; OKRs/KPIs alignment
+- Independently designed and shipped low-complexity features
+- Agile: sprint planning, backlog grooming, retrospectives, post-launch demos
+
+PRIOR: Senior QA Engineer, Peek (Apr 2022 - Mar 2024)
+- Playwright test automation; shift-left testing; payment integrations
+
+PRIOR: Associate Product Owner / Senior Test Engineer, Emerson (Oct 2017 - Mar 2022)
+- Pharmaceutical MES (Syncade); IEC 62364, ISO 13485, 21 CFR Part 11
+- 40% reduction in manual testing; $4.2M revenue; Best Employee 7x
+
+PRIOR: Software Test Analyst, Cognizant (Aug 2015 - Sep 2017)
+
+EDUCATION: MS Computer & Electrical Engineering, NJIT (GPA 3.7)
+CERTIFICATIONS: SAFe Agilist, CSPO, A-CSPO, CSM
+TOOLS: Jira, Confluence, Figma, Pendo, Mixpanel, Looker, PostHog, TestCollab, NotionAI
+SKILLS: Roadmapping, PRDs, User Stories, A/B Testing, GTM, OKRs, Sprint Planning, BDD/Gherkin, Mobile Apps, SQL
+DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software, Pharmaceutical MES
+""".strip()
+
+
 def analyze_job_with_claude(job):
     """
-    Sends the job description and both resumes to Claude.
-    Returns a dict with: industry, match_percent, match_tier, key_skills,
-    resume_recommendation, and notes.
+    Sends job description and both resumes to Claude.
+    Returns dict with industry, match_percent, key_skills, resume_recommendation, notes.
     """
     title        = job.get("title", "Unknown Title")
     company      = job.get("company", {}).get("display_name") or "Unknown Company"
     description  = job.get("description") or ""
     location_raw = job.get("location", {}).get("display_name") or ""
 
-    # Truncate long descriptions to reduce token usage
+    # Truncate description to control token usage
     if len(description) > 1500:
         description = description[:1500] + "\n...[truncated]"
 
-    prompt = f"""
-You are a job search assistant helping a Product Manager named Rounaq Gandhi analyze a job listing.
+    prompt = f"""You are a job search assistant helping Rounaq Gandhi, a Product Manager, analyze a job listing.
 
-Here is the job listing:
----
+Job listing:
 Title: {title}
 Company: {company}
 Location: {location_raw}
-Description:
-{description}
----
+Description: {description}
 
-Here are Rounaq's two resumes:
+Rounaq's Concise resume:
+{RESUME_CONCISE}
 
-RESUME 1 (1-page):
-{RESUME_1PAGE}
+Rounaq's Detailed resume:
+{RESUME_DETAILED}
 
-RESUME 2 (2-page):
-{RESUME_2PAGE}
-
-Please analyze this job listing and respond ONLY with a valid JSON object — no extra text, no markdown, no backticks. Use exactly this structure:
-
+Respond ONLY with a valid JSON object, no markdown, no extra text:
 {{
-  "industry": "<your best guess at the industry from the JD, e.g. B2B SaaS, FinTech, HealthTech, Enterprise Software, eCommerce, etc.>",
-  "match_percent": <integer from 0 to 100 representing how well Rounaq's background matches this JD>,
-  "key_skills": ["<skill 1>", "<skill 2>", "<skill 3>"],
-  "resume_recommendation": "<either 'Concise' or 'Detailed', with a one-sentence reason>",
-  "notes": "<2-3 sentences: why this role is or isn't a strong fit, any red flags, and anything Rounaq should customize in his application>"
+  "industry": "<industry e.g. B2B SaaS, FinTech, HealthTech, Enterprise Software>",
+  "match_percent": <0-100 integer>,
+  "key_skills": ["<skill1>", "<skill2>", "<skill3>"],
+  "resume_recommendation": "<Concise or Detailed with one-sentence reason>",
+  "notes": "<2-3 sentences: fit assessment, red flags, what to customize>"
 }}
 
 Rules:
-- key_skills: list the top 3-5 skills the JD emphasizes most (pull from the JD text, not the resume)
-- match_percent: base this on how Rounaq's actual experience, certifications, tools, and domain match what the JD asks for
-- match_percent tiers: Low = 0-30, Medium = 31-50, High = 51-80, Top = 81-100
-- resume_recommendation: recommend 'Concise' for roles that want sharp, focused APM/PM profiles; recommend 'Detailed' for senior/complex roles that value breadth of experience
-- notes: be specific and actionable
-""".strip()
+- match_percent: 0-30 Low, 31-50 Medium, 51-80 High, 81-100 Top
+- key_skills: top 3-5 skills the JD emphasizes
+- resume_recommendation: Concise for APM/PM roles, Detailed for senior/complex roles
+- notes: specific and actionable""".strip()
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     try:
         message = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=800,
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
         raw_text = message.content[0].text.strip()
-
-        # Strip markdown code fences if Claude wraps the JSON
         if raw_text.startswith("```"):
             raw_text = raw_text.split("```")[1]
             if raw_text.startswith("json"):
                 raw_text = raw_text[4:]
         raw_text = raw_text.strip()
+        return json.loads(raw_text)
 
-        result = json.loads(raw_text)
-        return result
-
-    except json.JSONDecodeError as e:
-        print(f"     ⚠️  JSON parse error for '{title}': {e}")
-        return default_claude_result()
     except Exception as e:
         print(f"     ⚠️  Claude API error for '{title}': {e}")
-        return default_claude_result()
-
-
-def default_claude_result():
-    """Fallback if Claude analysis fails."""
-    return {
-        "industry": "Unknown",
-        "match_percent": 0,
-        "key_skills": [],
-        "resume_recommendation": "1-page",
-        "notes": "Claude analysis unavailable for this listing.",
-    }
+        return {
+            "industry": "Unknown",
+            "match_percent": 0,
+            "key_skills": [],
+            "resume_recommendation": "Concise",
+            "notes": "Claude analysis unavailable.",
+        }
 
 
 def match_tier(percent):
-    """Converts a match percentage to the Notion select label."""
+    """Converts match percentage to tier label."""
     if percent <= 30:
         return "Low (<30%)"
     elif percent <= 50:
@@ -736,99 +708,6 @@ def send_slack_summary(saved_jobs):
     else:
         print(f"⚠️  Slack error: {resp.status_code} — {resp.text}")
 
-# ── Estimated balance tracker ─────────────────────────────────────────────────
-
-COST_PER_JOB       = 0.018   # actual cost per job from first run
-LOW_BALANCE_THRESHOLD = 1.00  # warn when estimated balance drops below $1
-BALANCE_FILE       = os.path.join(os.path.dirname(__file__), ".claude_balance")
-
-
-def load_balance():
-    """Load estimated remaining balance from local file."""
-    try:
-        with open(BALANCE_FILE, "r") as f:
-            return float(f.read().strip())
-    except Exception:
-        return None
-
-
-def save_balance(balance):
-    """Save estimated remaining balance to local file."""
-    try:
-        with open(BALANCE_FILE, "w") as f:
-            f.write(str(round(balance, 4)))
-    except Exception as e:
-        print(f"⚠️  Could not save balance file: {e}")
-
-
-def update_balance_and_warn(jobs_analyzed):
-    """
-    Deducts estimated cost from balance and sends Slack warning if below $1.
-    """
-    balance = load_balance()
-    if balance is None:
-        print("ℹ️  No balance file found — skipping balance check.")
-        print("    To enable: create .claude_balance file with your current credit amount.")
-        return
-
-    cost_this_run = jobs_analyzed * COST_PER_JOB
-    new_balance = balance - cost_this_run
-    save_balance(new_balance)
-
-    print(f"💰 Estimated Claude balance: ${new_balance:.2f} (spent ${cost_this_run:.2f} this run)")
-
-    if new_balance < LOW_BALANCE_THRESHOLD:
-        warning = (
-            f"🚨🚨🚨 *CLAUDE CREDITS RUNNING LOW* 🚨🚨🚨\n\n"
-            f"💸 Estimated remaining balance: *${new_balance:.2f}*\n"
-            f"⚠️ Threshold: ${LOW_BALANCE_THRESHOLD:.2f}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔴 *Action required:* Reload credits now or the agent will stop working.\n"
-            f"👉 https://console.anthropic.com/settings/billing\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"_After reloading, update your balance file:_\n"
-            f"`echo \"YOUR_NEW_AMOUNT\" > .claude_balance`"
-        )
-        requests.post(SLACK_WEBHOOK_URL, json={"text": warning}, timeout=10)
-        print(f"⚠️  Low balance warning sent to Slack (${new_balance:.2f} remaining)")
-
-
-# ── Claude balance check ─────────────────────────────────────────────────────
-
-def check_claude_balance():
-    """
-    Makes a minimal Claude API call to check if credits are available.
-    Sends a Slack warning if the API returns a credit error.
-    """
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    try:
-        client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=10,
-            messages=[{"role": "user", "content": "hi"}],
-        )
-        print("✅ Claude API credits available.")
-        return True
-    except Exception as e:
-        error_str = str(e).lower()
-        if "credit" in error_str or "balance" in error_str or "billing" in error_str or "402" in error_str:
-            warning = (
-                "🛑🛑🛑 *CLAUDE CREDITS EXHAUSTED* 🛑🛑🛑\n\n"
-                "💀 Your Anthropic API balance has hit $0.\n"
-                "❌ *Today's job analysis did NOT run.*\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "👉 Reload now: https://console.anthropic.com/settings/billing\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "_After reloading, update your balance file:_\n"
-                "`echo \"YOUR_NEW_AMOUNT\" > .claude_balance`"
-            )
-            requests.post(SLACK_WEBHOOK_URL, json={"text": warning}, timeout=10)
-            print("⚠️  Claude credits exhausted — Slack warning sent.")
-        else:
-            print(f"⚠️  Claude API check failed: {e}")
-        return False
-
-
 # ── Main orchestrator ─────────────────────────────────────────────────────────
 
 def main():
@@ -836,11 +715,6 @@ def main():
     print("  Job Search Agent — Starting Run")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("========================================\n")
-
-    # 0. Check Claude API credits before doing anything
-    if not check_claude_balance():
-        print("❌ Stopping run — Claude credits unavailable.")
-        return
 
     # 1. Pull raw jobs from Adzuna + LinkedIn
     adzuna_jobs = fetch_jobs_from_adzuna()
@@ -869,7 +743,7 @@ def main():
         link    = job.get("redirect_url") or job.get("link") or ""
         print(f"\n[{i}/{len(new_jobs)}] Analyzing: {title} at {company}")
 
-        # Ask Claude to analyze this job
+        # Analyze job with Claude
         analysis = analyze_job_with_claude(job)
         tier     = match_tier(analysis.get("match_percent", 0))
         resume   = analysis.get("resume_recommendation", "1-page")
@@ -898,9 +772,6 @@ def main():
     # 5. Send Slack summary
     print(f"\n📨 Sending Slack summary ({len(saved_jobs)} listings saved)...")
     send_slack_summary(saved_jobs)
-
-    # 6. Update estimated balance and warn if low
-    update_balance_and_warn(len(saved_jobs))
 
     print("\n========================================")
     print(f"  Run complete. {len(saved_jobs)} new listings saved.")
