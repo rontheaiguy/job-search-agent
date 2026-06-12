@@ -1,6 +1,7 @@
 """
 Job Search Agent
-Pulls jobs from Adzuna and LinkedIn, scores them with Claude, saves to Notion, notifies via Slack.
+Pulls jobs from Adzuna and LinkedIn, scores them with Groq/Llama, saves to Notion, notifies via Slack.
+Cost: $0/month — runs on Groq's free tier.
 """
 
 import os
@@ -11,14 +12,13 @@ import requests
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
-import anthropic
 
 # ── Load environment variables from .env ─────────────────────────────────────
 load_dotenv()
 
 ADZUNA_APP_ID          = os.getenv("ADZUNA_APP_ID")
 ADZUNA_APP_KEY         = os.getenv("ADZUNA_APP_KEY")
-ANTHROPIC_API_KEY      = os.getenv("ANTHROPIC_API_KEY")
+GROQ_API_KEY           = os.getenv("GROQ_API_KEY")
 NOTION_API_KEY         = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID     = os.getenv("NOTION_DATABASE_ID")
 SLACK_WEBHOOK_URL      = os.getenv("SLACK_WEBHOOK_URL")
@@ -47,7 +47,7 @@ def fetch_jobs_from_adzuna():
         print(f"  → Searching: {title}")
         title_jobs = []
 
-        for page in range(1, 3):  # 2 pages × 50 = 100 per title
+        for page in range(1, 6):  # 5 pages × 50 = 250 per title
             url = "https://api.adzuna.com/v1/api/jobs/us/search/" + str(page)
             params = {
                 "app_id":           ADZUNA_APP_ID,
@@ -96,16 +96,16 @@ def fetch_jobs_from_linkedin():
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    # f_TPR=r43200 = posted in last 12 hours (43200 seconds)
-    TIME_FILTER = "r43200"
+    # f_TPR=r86400 = posted in last 24 hours (86400 seconds)
+    TIME_FILTER = "r86400"
 
     for title in JOB_TITLES:
         print(f"  → Searching LinkedIn: {title}")
         title_jobs = []
         search_title = title.replace(" ", "%20")
 
-        # Pull up to 2 pages × 10 results = 20 per title
-        for page in range(2):
+        # Pull up to 5 pages × 10 results = 50 per title
+        for page in range(5):
             start = page * 10
             url = (
                 f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
@@ -158,7 +158,7 @@ def fetch_jobs_from_linkedin():
                             "location":    {"display_name": location},
                             "description": description,
                             "redirect_url": job_link,
-                            "created":     datetime.now(timezone.utc).isoformat(),
+                            "created":     datetime.now(timezone.utc).isoformat(),  # exact scrape timestamp
                             "source":      "LinkedIn",
                         })
 
@@ -377,10 +377,11 @@ DOMAINS: B2B SaaS, iOS Mobile, Enterprise Software, Pharmaceutical MES
 """.strip()
 
 
-def analyze_job_with_claude(job):
+def analyze_job_with_groq(job):
     """
-    Sends job description and both resumes to Claude.
+    Sends job description and both resumes to Groq/Llama 3.3 70B.
     Returns dict with industry, match_percent, key_skills, resume_recommendation, notes.
+    Free to run — uses Groq's free tier.
     """
     title        = job.get("title", "Unknown Title")
     company      = job.get("company", {}).get("display_name") or "Unknown Company"
@@ -420,15 +421,25 @@ Rules:
 - resume_recommendation: Concise for APM/PM roles, Detailed for senior/complex roles
 - notes: specific and actionable""".strip()
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 600,
+                "temperature": 0.1,
+            },
+            timeout=30,
         )
-        raw_text = message.content[0].text.strip()
+        response.raise_for_status()
+        raw_text = response.json()["choices"][0]["message"]["content"].strip()
+
+        # Strip markdown code fences if present
         if raw_text.startswith("```"):
             raw_text = raw_text.split("```")[1]
             if raw_text.startswith("json"):
@@ -437,13 +448,13 @@ Rules:
         return json.loads(raw_text)
 
     except Exception as e:
-        print(f"     ⚠️  Claude API error for '{title}': {e}")
+        print(f"     ⚠️  Groq API error for '{title}': {e}")
         return {
             "industry": "Unknown",
             "match_percent": 0,
             "key_skills": [],
             "resume_recommendation": "Concise",
-            "notes": "Claude analysis unavailable.",
+            "notes": "Groq analysis unavailable.",
         }
 
 
@@ -553,12 +564,18 @@ def save_to_notion(job, analysis, serial_number):
     link        = job.get("redirect_url") or job.get("link") or ""
     date_posted = job.get("created") or ""
 
-    # Format date_posted as YYYY-MM-DD for Notion
+    # Format date_posted for Notion — convert to Chicago time
     if date_posted:
         try:
+            from zoneinfo import ZoneInfo
+            chicago_tz = ZoneInfo("America/Chicago")
             if "T" in date_posted:
-                date_str = date_posted[:10]
+                # Full datetime available (LinkedIn) — convert to Chicago time
+                dt = datetime.fromisoformat(date_posted.replace("Z", "+00:00"))
+                dt_chicago = dt.astimezone(chicago_tz)
+                date_str = dt_chicago.strftime("%Y-%m-%dT%H:%M:%S") + dt_chicago.strftime("%z")[:3] + ":" + dt_chicago.strftime("%z")[3:]
             else:
+                # Date only (Adzuna)
                 date_str = date_posted[:10]
         except Exception:
             date_str = None
@@ -689,14 +706,14 @@ def send_slack_summary(saved_jobs):
         if top_matches:
             lines.append("🔥 *Top matches:*")
             for j in top_matches:
-                lines.append(f"• {j['title']} at *{j['company']}* — {j['match_percent']}% match ({j['tier']})")
+                lines.append(f"• *{j['title']}* at {j['company']} — {j['match_percent']}% ({j['tier']})")
             lines.append("")
 
         lines.append("📊 *Breakdown:*")
-        for tier, count in tier_counts.items():
-            if count > 0:
-                lines.append(f"• {tier}: {count}")
-
+        lines.append(f"• 🏆 Top (81–100%): {tier_counts['Top (81–100%)']}")
+        lines.append(f"• 🟢 High (51–80%): {tier_counts['High (51–80%)']}")
+        lines.append(f"• 🟡 Medium (31–50%): {tier_counts['Medium (31–50%)']}")
+        lines.append(f"• 🔴 Low (<30%): {tier_counts['Low (<30%)']}")
         lines.append(f"\n🔗 <{notion_url}|View all in Notion>")
 
         message = "\n".join(lines)
@@ -733,7 +750,7 @@ def main():
         send_slack_summary([])
         return
 
-    # 4. Analyze each job with Claude and save to Notion
+    # 4. Analyze each job with Groq and save to Notion
     saved_jobs = []
     serial_number = get_next_serial_number()
 
@@ -743,8 +760,8 @@ def main():
         link    = job.get("redirect_url") or job.get("link") or ""
         print(f"\n[{i}/{len(new_jobs)}] Analyzing: {title} at {company}")
 
-        # Analyze job with Claude
-        analysis = analyze_job_with_claude(job)
+        # Analyze job with Groq/Llama — free
+        analysis = analyze_job_with_groq(job)
         tier     = match_tier(analysis.get("match_percent", 0))
         resume   = analysis.get("resume_recommendation", "1-page")
 
@@ -766,8 +783,8 @@ def main():
         else:
             print(f"     ❌ Failed to save to Notion.")
 
-        # Small pause to avoid rate limits
-        time.sleep(1)
+        # 2 second delay to respect Groq's 30 requests/minute free tier limit
+        time.sleep(2)
 
     # 5. Send Slack summary
     print(f"\n📨 Sending Slack summary ({len(saved_jobs)} listings saved)...")
