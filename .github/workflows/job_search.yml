@@ -2,8 +2,11 @@ name: Job Search Agent
 
 on:
   schedule:
-    - cron: '44 16 * * 1-5'
+    - cron: '0 12 * * 1,2,4'   # 7:00am CDT — Mon / Tue / Thu (12:00 UTC)
   workflow_dispatch:
+
+permissions:
+  contents: write   # required so the workflow can commit Job_Tracker.xlsx back
 
 jobs:
   run-agent:
@@ -20,14 +23,23 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dotenv notion-client beautifulsoup4
+          pip install requests python-dotenv beautifulsoup4 openpyxl
 
       - name: Run job search agent
         env:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          USAJOBS_API_KEY: ${{ secrets.USAJOBS_API_KEY }}
+          USAJOBS_USER_AGENT: ${{ secrets.USAJOBS_USER_AGENT }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python agent.py
+
+      - name: Commit updated tracker
+        run: |
+          git config user.name "job-search-agent[bot]"
+          git config user.email "actions@users.noreply.github.com"
+          git pull --rebase origin main
+          git add Job_Tracker.xlsx
+          git diff --staged --quiet || git commit -m "Tracker update — $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
