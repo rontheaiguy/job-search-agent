@@ -1,6 +1,6 @@
 """
 Job Search Agent — v2 (M1)
-Pulls jobs from Adzuna, LinkedIn, and USAJOBS; scores them with Groq/Llama;
+Pulls jobs from Adzuna, LinkedIn, and USAJOBS; scores them with Claude Haiku;
 appends new listings to Job_Tracker.xlsx in the repo; notifies via Slack.
 
 Changes from v1:
@@ -10,6 +10,8 @@ Changes from v1:
   - Dedup hardened: URL match + company|title|location fingerprint (cross-source)
   - New match tiers: Top 75-100, High 50-74, Medium 25-49, Low 0-24
   - Resume selection maps to the 3 real resume files (PM / PO / MES)
+  - Scoring runs on Claude Haiku 4.5 (Groq free tier could not handle the
+    token volume). Retries with backoff on rate limits; saves every 25 jobs.
 """
 
 import os
@@ -20,14 +22,18 @@ import requests
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import get_column_letter
 
 # ── Load environment variables ────────────────────────────────────────────────
 load_dotenv()
 
 ADZUNA_APP_ID      = os.getenv("ADZUNA_APP_ID")
 ADZUNA_APP_KEY     = os.getenv("ADZUNA_APP_KEY")
-GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY")        # reserved for M2 prefilter
+ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 USAJOBS_API_KEY    = os.getenv("USAJOBS_API_KEY")      # register free at developer.usajobs.gov
 USAJOBS_USER_AGENT = os.getenv("USAJOBS_USER_AGENT")   # the email you registered with
 SLACK_WEBHOOK_URL  = os.getenv("SLACK_WEBHOOK_URL")
@@ -519,24 +525,7 @@ $1.1M retained). Use whenever the company is pharma, med-device, MES, or FDA-reg
 """.strip()
 
 
-def analyze_job_with_groq(job):
-    """
-    Scores the job against the three resume variants and picks the best file.
-    Free — runs on Groq's free tier. M2 replaces this with the hybrid
-    Groq-filter + Claude Haiku evidence-based scorer.
-    """
-    title       = job.get("title", "Unknown Title")
-    company     = job.get("company", {}).get("display_name") or "Unknown Company"
-    description = (job.get("description") or "")[:1500]
-    location    = job.get("location", {}).get("display_name") or ""
-
-    prompt = f"""You are a job-search assistant for Rounaq Gandhi. Analyze this listing against his three resume variants.
-
-Job listing:
-Title: {title}
-Company: {company}
-Location: {location}
-Description: {description}
+SCORING_SYSTEM = f"""You are a job-search assistant for Rounaq Gandhi. You analyze job listings against his three resume variants.
 
 {RESUME_PM_SUMMARY}
 
@@ -544,7 +533,7 @@ Description: {description}
 
 {RESUME_MES_SUMMARY}
 
-Respond ONLY with a valid JSON object, no markdown, no extra text:
+For every job listing you receive, respond ONLY with a valid JSON object, no markdown, no extra text:
 {{
   "industry": "<e.g. B2B SaaS, FinTech, Pharma, Enterprise Software>",
   "match_percent": <0-100 integer — how well the BEST resume fits this JD>,
@@ -561,41 +550,67 @@ Resume selection rules (apply in this order):
 Scoring guidance:
 - Be conservative. Only score 75+ when the JD's core requirements clearly map to resume experience.
 - Deduct for: hard requirements he lacks (e.g. specific industry depth, 8+ years in PM title, people management), clearance he'd need, niche technical stacks.
-- match_percent bands: 75-100 Top, 50-74 High, 25-49 Medium, 0-24 Low""".strip()
+- match_percent bands: 75-100 Top, 50-74 High, 25-49 Medium, 0-24 Low"""
 
-    try:
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-            json={
-                "model":       "llama-3.3-70b-versatile",
-                "messages":    [{"role": "user", "content": prompt}],
-                "max_tokens":  600,
-                "temperature": 0.1,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        raw_text = response.json()["choices"][0]["message"]["content"].strip()
 
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-        return json.loads(raw_text.strip())
+def analyze_job_with_claude(job):
+    """
+    Scores the job with Claude Haiku 4.5. The static context (resumes + rules)
+    is sent as a cached system prompt, so per-job cost is only the JD itself.
+    Retries with exponential backoff on rate limits / server errors.
+    Returns None if scoring ultimately fails (caller records it as unscored).
+    """
+    title       = job.get("title", "Unknown Title")
+    company     = job.get("company", {}).get("display_name") or "Unknown Company"
+    description = (job.get("description") or "")[:1500]
+    location    = job.get("location", {}).get("display_name") or ""
 
-    except Exception as e:
-        print(f"     ⚠️  Groq API error for '{title}': {e}")
-        return {
-            "industry":      "Unknown",
-            "match_percent": 0,
-            "key_skills":    [],
-            "resume_file":   "",
-            "notes":         "LLM analysis unavailable — score manually.",
-        }
+    user_msg = (f"Job listing:\nTitle: {title}\nCompany: {company}\n"
+                f"Location: {location}\nDescription: {description}")
+
+    for attempt in range(4):
+        try:
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key":         ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type":      "application/json",
+                },
+                json={
+                    "model":       "claude-haiku-4-5",
+                    "max_tokens":  600,
+                    "temperature": 0,  # deterministic — same job always scores the same
+                    "system": [{
+                        "type": "text",
+                        "text": SCORING_SYSTEM,
+                        "cache_control": {"type": "ephemeral"},
+                    }],
+                    "messages": [{"role": "user", "content": user_msg}],
+                },
+                timeout=60,
+            )
+
+            if response.status_code in (429, 500, 502, 503, 529):
+                wait = int(response.headers.get("retry-after", 0)) or (5 * (2 ** attempt))
+                print(f"     ⏳ API busy ({response.status_code}) — retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+
+            response.raise_for_status()
+            raw_text = response.json()["content"][0]["text"].strip()
+
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("```")[1]
+                if raw_text.startswith("json"):
+                    raw_text = raw_text[4:]
+            return json.loads(raw_text.strip())
+
+        except Exception as e:
+            print(f"     ⚠️  Claude API error for '{title}' (attempt {attempt + 1}): {e}")
+            time.sleep(5 * (2 ** attempt))
+
+    return None  # scoring failed after all retries
 
 
 def match_tier(percent):
@@ -660,14 +675,51 @@ def detect_source(job):
 
 # ── Step 4: Append to Excel ───────────────────────────────────────────────────
 
+def ensure_workbook():
+    """Creates Job_Tracker.xlsx with headers + dropdowns if it doesn't exist."""
+    if os.path.exists(EXCEL_PATH):
+        return
+
+    print(f"  ℹ️  {EXCEL_PATH} not found — creating it.")
+    widths = [12, 24, 32, 10, 9, 38, 13, 20, 24, 22, 14, 45, 30, 45, 60]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_NAME
+
+    fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    font = Font(color="FFFFFF", bold=True, size=11)
+    for i, (col, w) in enumerate(zip(COLUMNS, widths), start=1):
+        c = ws.cell(row=1, column=i, value=col)
+        c.fill, c.font = fill, font
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
+    ws.row_dimensions[1].height = 28
+
+    validations = [
+        ("D", '"Top,High,Medium,Low"'),
+        ("F", f'"{RESUME_PM},{RESUME_PO},{RESUME_MES}"'),
+        ("G", '"New,Applied,Interviewing,Rejected,Offer,Skipped"'),
+        ("H", '"Onsite,Hybrid,Remote"'),
+    ]
+    for col, formula in validations:
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+        ws.add_data_validation(dv)
+        dv.add(f"{col}2:{col}5000")
+
+    wb.save(EXCEL_PATH)
+
+
 def append_to_excel(rows):
     """
-    Appends new job rows to Job_Tracker.xlsx.
+    Appends new job rows to Job_Tracker.xlsx (creating it if missing).
     NEVER modifies existing rows — your Status/Notes edits are preserved.
     """
     if not rows:
         return 0
 
+    ensure_workbook()
     wb = load_workbook(EXCEL_PATH)
     ws = wb[SHEET_NAME]
 
@@ -752,21 +804,31 @@ def main():
         send_slack_summary([])
         return
 
-    # 4. Score each job and build rows
-    rows = []
+    # 4. Score each job and build rows (saved to Excel every 25 jobs so a
+    #    crash or interruption never loses more than the current batch)
+    all_rows, buffer, failed = [], [], 0
     for i, job in enumerate(new_jobs, start=1):
         title   = job.get("title", "Unknown Title")
         company = job.get("company", {}).get("display_name") or "Unknown Company"
         print(f"\n[{i}/{len(new_jobs)}] Analyzing: {title} at {company}")
 
-        analysis = analyze_job_with_groq(job)
-        pct      = analysis.get("match_percent", 0)
-        tier     = match_tier(pct)
-        resume   = pick_resume(analysis, title)
+        analysis = analyze_job_with_claude(job)
 
-        print(f"     Match: {pct}% ({tier}) | Resume: {resume}")
+        if analysis is None:
+            failed += 1
+            pct, tier = "", ""
+            resume = pick_resume({}, title)
+            key_skills, notes = "", "Scoring failed — run again later or score manually."
+            print("     ❌ Scoring failed — recorded unscored.")
+        else:
+            pct    = analysis.get("match_percent", 0)
+            tier   = match_tier(pct)
+            resume = pick_resume(analysis, title)
+            key_skills = ", ".join(analysis.get("key_skills", []))
+            notes  = analysis.get("notes", "")
+            print(f"     Match: {pct}% ({tier}) | Resume: {resume}")
 
-        rows.append({
+        buffer.append({
             "date_added":    datetime.now().strftime("%Y-%m-%d"),
             "company":       company,
             "title":         title,
@@ -778,22 +840,32 @@ def main():
             "salary":        extract_salary(job),
             "source":        detect_source(job),
             "link":          (job.get("redirect_url") or "").strip(),
-            "key_skills":    ", ".join(analysis.get("key_skills", [])),
-            "notes":         analysis.get("notes", ""),
+            "key_skills":    key_skills,
+            "notes":         notes,
             "description":   (job.get("description") or "")[:1500],
         })
 
-        time.sleep(2)  # respect Groq free-tier rate limit (30 req/min)
+        if len(buffer) >= 25:
+            append_to_excel(buffer)
+            all_rows.extend(buffer)
+            buffer = []
+            print(f"     💾 Progress saved ({len(all_rows)} rows so far)")
 
-    # 5. Append to Excel
-    added = append_to_excel(rows)
-    print(f"\n💾 {added} rows appended to {EXCEL_PATH}")
+        time.sleep(1)
 
-    # 6. Slack digest
-    send_slack_summary(rows)
+    # 5. Flush remaining rows
+    if buffer:
+        append_to_excel(buffer)
+        all_rows.extend(buffer)
+
+    print(f"\n💾 {len(all_rows)} rows appended to {EXCEL_PATH}"
+          + (f" ({failed} unscored — will not be re-fetched; score manually or ask Claude)" if failed else ""))
+
+    # 6. Slack digest (unscored rows excluded from tier counts)
+    send_slack_summary([r for r in all_rows if r["tier"]])
 
     print("\n========================================")
-    print(f"  Run complete. {added} new listings saved.")
+    print(f"  Run complete. {len(all_rows)} new listings saved.")
     print("========================================\n")
 
 
