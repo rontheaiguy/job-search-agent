@@ -200,7 +200,7 @@ def fetch_jobs_from_linkedin():
                         job_title   = title_el.get_text(strip=True) if title_el else ""
                         company     = company_el.get_text(strip=True) if company_el else ""
                         location    = location_el.get_text(strip=True) if location_el else ""
-                        description = desc_el.get_text(strip=True)[:1500] if desc_el else ""
+                        description = desc_el.get_text(strip=True)[:6000] if desc_el else ""
 
                         if not job_title:
                             continue
@@ -290,7 +290,7 @@ def fetch_jobs_from_usajobs():
                     "title":        d.get("PositionTitle", ""),
                     "company":      {"display_name": d.get("OrganizationName", "US Government")},
                     "location":     {"display_name": d.get("PositionLocationDisplay", "")},
-                    "description":  summary[:1500],
+                    "description":  summary[:6000],
                     "redirect_url": d.get("PositionURI", ""),
                     "created":      d.get("PublicationStartDate", ""),
                     "salary":       salary,
@@ -562,7 +562,7 @@ def analyze_job_with_claude(job):
     """
     title       = job.get("title", "Unknown Title")
     company     = job.get("company", {}).get("display_name") or "Unknown Company"
-    description = (job.get("description") or "")[:1500]
+    description = (job.get("description") or "")[:5000]
     location    = job.get("location", {}).get("display_name") or ""
 
     user_msg = (f"Job listing:\nTitle: {title}\nCompany: {company}\n"
@@ -842,7 +842,7 @@ def main():
             "link":          (job.get("redirect_url") or "").strip(),
             "key_skills":    key_skills,
             "notes":         notes,
-            "description":   (job.get("description") or "")[:1500],
+            "description":   (job.get("description") or "")[:5000],
         })
 
         if len(buffer) >= 25:
