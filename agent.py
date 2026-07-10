@@ -100,6 +100,7 @@ COLUMNS = [
     "Key Skills",            # M
     "Notes",                 # N
     "Job Description",       # O
+    "Employer Type",         # P
 ]
 
 # ── Step 1: Fetch jobs ────────────────────────────────────────────────────────
@@ -536,21 +537,62 @@ SCORING_SYSTEM = f"""You are a job-search assistant for Rounaq Gandhi. You analy
 For every job listing you receive, respond ONLY with a valid JSON object, no markdown, no extra text:
 {{
   "industry": "<e.g. B2B SaaS, FinTech, Pharma, Enterprise Software>",
-  "match_percent": <0-100 integer — how well the BEST resume fits this JD>,
+  "employer_type": "<Direct | Staffing | Unclear — Staffing means the poster is a staffing/recruiting/placement agency (e.g. Kforce, Insight Global, TEKsystems, Robert Half, Actalent, Prestige Staffing, IDR, Jobgether, Yochana) hiring for a client, not for itself>",
+  "components": {{
+    "title_fit": <0-25>,
+    "responsibilities": <0-30>,
+    "requirements": <0-25>,
+    "domain": <0-20>
+  }},
+  "match_percent": <sum of the four components, 0-100>,
+  "disqualifiers": [<STRICT closed list — a disqualifier is ONLY one of: (a) the JD requires 8 or more years of product management / product ownership experience specifically; (b) requires an ACTIVE/current security clearance or current federal employment — but "ability to obtain a clearance" or "clearance eligibility" is NOT a disqualifier (he is a U.S. citizen and clearable; treat obtain-eligibility as a minor Requirements deduction at most); (c) requires a licensed credential he lacks (MD, RN, CPA, PE, bar admission); (d) requires work authorization he lacks. NOTHING ELSE QUALIFIES. Domain-experience requirements (e.g. "2+ years healthcare payments", "fintech background", "data platform experience") are NOT disqualifiers — handle those as Requirements deductions. Seniority/scale expectations without an explicit 8+ year figure are NOT disqualifiers. Expect fewer than 10% of listings to have any. Empty list [] if none>],
   "key_skills": ["<skill1>", "<skill2>", "<skill3>"],
   "resume_file": "<exactly one of: {RESUME_PM}, {RESUME_PO}, {RESUME_MES}>",
   "notes": "<2-3 sentences: fit assessment, red flags, what to customize>"
 }}
 
+Component scoring rubric — score each independently, then sum:
+
+TITLE_FIT (0-25): Exact target title at his level (PM, Sr PM, PO, Sr PO) = 20-25.
+Adjacent variant (e.g. "Technical PO", "Digital PM", "Product Manager II") = 14-19.
+Stretch title or seniority mismatch = 0-13.
+
+RESPONSIBILITIES (0-30): Map the JD's top 5 stated responsibilities to concrete
+resume evidence. ~6 points per responsibility with DIRECT evidence (named project,
+metric, or duty), ~3 for partial/transferable evidence, 0 for none.
+
+REQUIREMENTS (0-25): Start at 25. Deduct 5-10 for EACH unmet hard requirement:
+required domain depth he lacks, required tech stack absent from resume,
+people-management requirement, required certifications he lacks.
+YEARS-OF-EXPERIENCE CALIBRATION (apply strictly): he has ~3 years in the PM/PO
+title (2023-2026) and ~7 years total product-adjacent (QA -> Associate PO -> PM).
+JD requires 5-6+ years of product management specifically: deduct 8-12.
+JD requires 7-9+ years: this component <= 8. JD requires 10+ years: this
+component <= 5 — the gap is disqualifying regardless of other strengths.
+Security clearance or current-federal-employee requirements he cannot meet:
+score this component 0-3. Also check "Preferred/Additional Qualifications":
+if most are unmet, deduct 3-5 more.
+
+DOMAIN (0-20): Same domain as resume evidence (B2B SaaS, mobile/iOS, marketplace,
+booking/commerce platforms, pharma/MES for Resume C) = 15-20. Adjacent or
+transferable = 8-14. Unrelated domain where the JD demands domain depth = 0-7.
+
+CALIBRATION ANCHORS — hold these lines:
+- Across a large random batch of PM/PO listings, expect roughly 5-10% at 75+,
+  20-30% at 50-74, 35-45% at 25-49, and 20-30% below 25. If most of your scores
+  land in the 60s and 70s, you are scoring too generously.
+- A generic decent fit with no standout alignment belongs at 45-60, not 65-78.
+- Reserve 75+ for listings where title, responsibilities, AND domain all align
+  with direct resume evidence and no hard requirement is unmet.
+- Use the full range within each component. Avoid defaulting to round numbers.
+- Any listed disqualifier hard-caps the final score at 45 (enforced in code):
+  a requirement the candidate cannot meet vetoes the match no matter how strong
+  the rest of the alignment is, because real screening works that way.
+
 Resume selection rules (apply in this order):
 1. If the company/domain is pharma, medical devices, MES, or FDA-regulated manufacturing → {RESUME_MES}
 2. Else if the job title contains "Product Owner" → {RESUME_PO}
-3. Else → {RESUME_PM}
-
-Scoring guidance:
-- Be conservative. Only score 75+ when the JD's core requirements clearly map to resume experience.
-- Deduct for: hard requirements he lacks (e.g. specific industry depth, 8+ years in PM title, people management), clearance he'd need, niche technical stacks.
-- match_percent bands: 75-100 Top, 50-74 High, 25-49 Medium, 0-24 Low"""
+3. Else → {RESUME_PM}"""
 
 
 def analyze_job_with_claude(job):
@@ -676,12 +718,29 @@ def detect_source(job):
 # ── Step 4: Append to Excel ───────────────────────────────────────────────────
 
 def ensure_workbook():
-    """Creates Job_Tracker.xlsx with headers + dropdowns if it doesn't exist."""
+    """
+    Creates Job_Tracker.xlsx with headers + dropdowns if it doesn't exist.
+    If it exists but predates the Employer Type column, adds it (one-time migration).
+    """
     if os.path.exists(EXCEL_PATH):
+        wb = load_workbook(EXCEL_PATH)
+        ws = wb[SHEET_NAME]
+        if ws["P1"].value != "Employer Type":
+            c = ws["P1"]
+            c.value = "Employer Type"
+            c.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+            c.font = Font(color="FFFFFF", bold=True, size=11)
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            ws.column_dimensions["P"].width = 14
+            dv = DataValidation(type="list", formula1='"Direct,Staffing,Unclear"', allow_blank=True)
+            ws.add_data_validation(dv)
+            dv.add("P2:P5000")
+            wb.save(EXCEL_PATH)
+            print("  ℹ️  Migrated tracker: added Employer Type column.")
         return
 
     print(f"  ℹ️  {EXCEL_PATH} not found — creating it.")
-    widths = [12, 24, 32, 10, 9, 38, 13, 20, 24, 22, 14, 45, 30, 45, 60]
+    widths = [12, 24, 32, 10, 9, 38, 13, 20, 24, 22, 14, 45, 30, 45, 60, 14]
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET_NAME
@@ -702,6 +761,7 @@ def ensure_workbook():
         ("F", f'"{RESUME_PM},{RESUME_PO},{RESUME_MES}"'),
         ("G", '"New,Applied,Interviewing,Rejected,Offer,Skipped"'),
         ("H", '"Onsite,Hybrid,Remote"'),
+        ("P", '"Direct,Staffing,Unclear"'),
     ]
     for col, formula in validations:
         dv = DataValidation(type="list", formula1=formula, allow_blank=True)
@@ -728,6 +788,7 @@ def append_to_excel(rows):
             r["date_added"], r["company"], r["title"], r["tier"], r["match_percent"],
             r["resume"], "New", r["mode"], r["location"], r["salary"],
             r["source"], r["link"], r["key_skills"], r["notes"], r["description"],
+            r.get("employer", ""),
         ])
 
     wb.save(EXCEL_PATH)
@@ -748,7 +809,8 @@ def send_slack_summary(saved_jobs):
             tier_counts[j["tier"]] = tier_counts.get(j["tier"], 0) + 1
 
         top_matches = sorted(
-            [j for j in saved_jobs if j["tier"] in ("Top", "High")],
+            [j for j in saved_jobs
+             if j["tier"] in ("Top", "High") and j.get("employer") != "Staffing"],
             key=lambda x: x["match_percent"], reverse=True,
         )[:5]
 
@@ -814,11 +876,27 @@ def main():
 
         analysis = analyze_job_with_claude(job)
 
+        if analysis is not None and isinstance(analysis.get("components"), dict):
+            comp = analysis["components"]
+            try:
+                pct_sum = max(0, min(100, sum(
+                    int(comp.get(k, 0)) for k in
+                    ("title_fit", "responsibilities", "requirements", "domain"))))
+                dq = analysis.get("disqualifiers") or []
+                if dq:
+                    pct_sum = min(pct_sum, 45)
+                    analysis["notes"] = ("DISQUALIFIER: " + "; ".join(str(d) for d in dq)
+                                         + ". " + analysis.get("notes", ""))
+                analysis["match_percent"] = pct_sum
+            except Exception:
+                pass
+
         if analysis is None:
             failed += 1
             pct, tier = "", ""
             resume = pick_resume({}, title)
             key_skills, notes = "", "Scoring failed — run again later or score manually."
+            employer = "Unclear"
             print("     ❌ Scoring failed — recorded unscored.")
         else:
             pct    = analysis.get("match_percent", 0)
@@ -826,6 +904,9 @@ def main():
             resume = pick_resume(analysis, title)
             key_skills = ", ".join(analysis.get("key_skills", []))
             notes  = analysis.get("notes", "")
+            employer = analysis.get("employer_type", "Unclear")
+            if employer not in ("Direct", "Staffing", "Unclear"):
+                employer = "Unclear"
             print(f"     Match: {pct}% ({tier}) | Resume: {resume}")
 
         buffer.append({
@@ -843,6 +924,7 @@ def main():
             "key_skills":    key_skills,
             "notes":         notes,
             "description":   (job.get("description") or "")[:5000],
+            "employer":      employer,
         })
 
         if len(buffer) >= 25:
