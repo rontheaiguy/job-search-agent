@@ -16,6 +16,8 @@ Changes from v1:
 
 import os
 import re
+import sys
+import yaml
 import json
 import time
 import requests
@@ -37,6 +39,28 @@ ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 USAJOBS_API_KEY    = os.getenv("USAJOBS_API_KEY")      # register free at developer.usajobs.gov
 USAJOBS_USER_AGENT = os.getenv("USAJOBS_USER_AGENT")   # the email you registered with
 SLACK_WEBHOOK_URL  = os.getenv("SLACK_WEBHOOK_URL")
+JSEARCH_API_KEY    = os.getenv("JSEARCH_API_KEY")      # rapidapi.com JSearch (Google Jobs)
+
+# ── Configuration (config.yml overrides these defaults) ─────────────────────
+_DEFAULTS = {
+    "titles": ["Product Owner", "Senior Product Owner",
+               "Product Manager", "Senior Product Manager"],
+    "preferred_states": ["Illinois", "Florida"],
+    "watchlist": [],
+    "exclude_staffing": False,
+    "linkedin_pages_national": 10,
+    "linkedin_pages_state": 4,
+    "max_days_old": 4,
+}
+CFG = dict(_DEFAULTS)
+if os.path.exists("config.yml"):
+    try:
+        loaded = yaml.safe_load(open("config.yml")) or {}
+        CFG.update({k: v for k, v in loaded.items() if v is not None})
+    except Exception as e:
+        print(f"⚠️  config.yml unreadable ({e}) — using built-in defaults.")
+
+FORCE_WATCHLIST = "--watchlist" in sys.argv
 
 EXCEL_PATH  = "Job_Tracker.xlsx"
 SHEET_NAME  = "Tracker"
@@ -44,12 +68,7 @@ TRACKER_URL = "https://github.com/rontheaiguy/job-search-agent/blob/main/Job_Tra
 
 # ── Target job titles ─────────────────────────────────────────────────────────
 
-JOB_TITLES = [
-    "Product Owner",
-    "Senior Product Owner",
-    "Product Manager",
-    "Senior Product Manager",
-]
+JOB_TITLES = CFG["titles"]
 
 # Titles allowed through the filter (lowercase substring match)
 ALLOWED_TITLES = [
@@ -149,29 +168,37 @@ def fetch_jobs_from_adzuna():
     return all_jobs
 
 
-def fetch_jobs_from_linkedin():
-    """Scrapes LinkedIn's public guest API for each target title."""
-    print("🔍 Fetching jobs from LinkedIn...")
+def fetch_jobs_from_linkedin(location="United States", pages=None):
+    """
+    Scrapes LinkedIn's public guest API for each target title.
+    Date-sorted (newest first) so sampling depth is deterministic.
+    Called once nationally and once per preferred state (deeper local recall).
+    """
+    if pages is None:
+        pages = CFG["linkedin_pages_national"]
+    print(f"🔍 Fetching jobs from LinkedIn ({location})...")
     all_jobs = []
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    TIME_FILTER = "r172800"  # last 48 hours — Mon run covers the weekend gap
+    TIME_FILTER = f"r{CFG['max_days_old'] * 86400}"
+    loc_param = location.replace(" ", "%20").replace(",", "%2C")
 
     for title in JOB_TITLES:
         print(f"  → Searching LinkedIn: {title}")
         title_jobs = []
         search_title = title.replace(" ", "%20")
 
-        for page in range(5):
+        for page in range(pages):
             start = page * 10
             url = (
                 f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                 f"?keywords={search_title}"
-                f"&location=United%20States"
+                f"&location={loc_param}"
                 f"&f_TPR={TIME_FILTER}"
+                f"&sortBy=DD"
                 f"&start={start}"
             )
 
@@ -308,6 +335,124 @@ def fetch_jobs_from_usajobs():
     print(f"✅ USAJOBS total: {len(all_jobs)}")
     return all_jobs
 
+def _jsearch_query(query, date_window="3days", pages=1):
+    """One JSearch (Google Jobs) request → normalized job dicts."""
+    jobs = []
+    try:
+        resp = requests.get(
+            "https://jsearch.p.rapidapi.com/search",
+            headers={"X-RapidAPI-Key": JSEARCH_API_KEY,
+                     "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
+            params={"query": query, "date_posted": date_window,
+                    "num_pages": pages, "country": "us"},
+            timeout=30)
+        if resp.status_code == 429:
+            print("     ⚠️  JSearch monthly quota reached — skipping remaining queries.")
+            return None  # signal quota exhaustion
+        resp.raise_for_status()
+        for d in resp.json().get("data", []):
+            loc = ", ".join(x for x in [d.get("job_city"), d.get("job_state")] if x)
+            salary = ""
+            if d.get("job_min_salary") and d.get("job_max_salary"):
+                salary = f"${d['job_min_salary']:,.0f} – ${d['job_max_salary']:,.0f}"
+            jobs.append({
+                "title":        d.get("job_title", ""),
+                "company":      {"display_name": d.get("employer_name", "")},
+                "location":     {"display_name": loc},
+                "description":  (d.get("job_description") or "")[:6000],
+                "redirect_url": d.get("job_apply_link", ""),
+                "created":      d.get("job_posted_at_datetime_utc", ""),
+                "salary":       salary,
+                "source":       "Google Jobs",
+            })
+    except Exception as e:
+        print(f"     ⚠️  JSearch error for '{query}': {e}")
+    return jobs
+
+
+def fetch_jobs_from_jsearch():
+    """National Google Jobs sweep — indexes company career pages directly."""
+    if not JSEARCH_API_KEY:
+        print("ℹ️  JSearch skipped — JSEARCH_API_KEY not set.")
+        return []
+    print("🔍 Fetching jobs from Google Jobs (JSearch)...")
+    all_jobs = []
+    for title in JOB_TITLES:
+        got = _jsearch_query(f'"{title}" in United States')
+        if got is None:
+            break
+        print(f"  → {title}: {len(got)}")
+        all_jobs.extend(got)
+        time.sleep(1)
+    print(f"✅ Google Jobs total: {len(all_jobs)}")
+    return all_jobs
+
+
+def fetch_watchlist_jobs():
+    """
+    Guaranteed-coverage sweep of config.yml watchlist companies via JSearch.
+    Runs on Mondays (to respect the free-tier quota) or with --watchlist.
+    Watchlist jobs use a RELAXED title check (any product role at a target
+    company is worth seeing).
+    """
+    if not CFG["watchlist"] or not JSEARCH_API_KEY:
+        return []
+    is_monday = datetime.now().weekday() == 0
+    if not (is_monday or FORCE_WATCHLIST):
+        print("ℹ️  Watchlist sweep skipped (runs Mondays; force with --watchlist).")
+        return []
+    print(f"🔍 Watchlist sweep: {len(CFG['watchlist'])} companies...")
+    all_jobs = []
+    for company in CFG["watchlist"]:
+        got = _jsearch_query(f'product owner OR product manager {company}',
+                             date_window="week")
+        if got is None:
+            break
+        kept = [j for j in got
+                if company.split()[0].lower() in
+                   (j["company"]["display_name"] or "").lower()]
+        for j in kept:
+            j["watchlist"] = True
+        if kept:
+            print(f"  → {company}: {len(kept)}")
+        all_jobs.extend(kept)
+        time.sleep(1)
+    print(f"✅ Watchlist total: {len(all_jobs)}")
+    return all_jobs
+
+
+def upgrade_adzuna_descriptions(jobs):
+    """
+    Two-pass full-JD fetch: Adzuna's API returns ~500-char stubs, so for
+    filtered Adzuna jobs we follow the redirect to the source posting and
+    extract the real text (best-effort — failures keep the stub).
+    """
+    stubs = [j for j in jobs if detect_source(j) == "Adzuna"
+             and len(j.get("description") or "") < 600]
+    if not stubs:
+        return
+    print(f"📄 Fetching full JDs for {len(stubs)} Adzuna stubs...")
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    upgraded = 0
+    for j in stubs:
+        try:
+            resp = requests.get(j["redirect_url"], headers=headers,
+                                timeout=20, allow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "header", "footer"]):
+                tag.decompose()
+            text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+            if len(text) > len(j.get("description") or "") + 300:
+                j["description"] = text[:6000]
+                upgraded += 1
+        except Exception:
+            pass
+        time.sleep(0.5)
+    print(f"  → Upgraded {upgraded}/{len(stubs)} descriptions.")
+
+
 # ── Step 2: Filter ────────────────────────────────────────────────────────────
 
 def is_recent(job):
@@ -333,6 +478,9 @@ def is_relevant_title(job):
     for blocked in BLOCKED_TITLE_FRAGMENTS:
         if blocked in title:
             return False
+
+    if job.get("watchlist"):
+        return "product" in title  # relaxed: any product role at a target company
 
     return any(allowed in title for allowed in ALLOWED_TITLES)
 
@@ -786,7 +934,7 @@ def append_to_excel(rows):
     for r in rows:
         ws.append([
             r["date_added"], r["company"], r["title"], r["tier"], r["match_percent"],
-            r["resume"], "New", r["mode"], r["location"], r["salary"],
+            r["resume"], r.get("status", "New"), r["mode"], r["location"], r["salary"],
             r["source"], r["link"], r["key_skills"], r["notes"], r["description"],
             r.get("employer", ""),
         ])
@@ -849,10 +997,16 @@ def main():
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("========================================\n")
 
-    # 1. Pull raw jobs from all three sources
+    # 1. Pull raw jobs: national sources + preferred-state passes + watchlist
     raw_jobs = (fetch_jobs_from_adzuna()
                 + fetch_jobs_from_linkedin()
-                + fetch_jobs_from_usajobs())
+                + fetch_jobs_from_usajobs()
+                + fetch_jobs_from_jsearch()
+                + fetch_watchlist_jobs())
+    for state in CFG["preferred_states"]:
+        raw_jobs += fetch_jobs_from_linkedin(
+            location=f"{state}, United States",
+            pages=CFG["linkedin_pages_state"])
     print(f"\n📦 Combined total: {len(raw_jobs)} raw listings")
 
     # 2. Read existing tracker entries for dedup
@@ -860,6 +1014,9 @@ def main():
 
     # 3. Filter
     new_jobs = filter_jobs(raw_jobs, existing_links, existing_prints)
+
+    # 3b. Upgrade Adzuna stub descriptions to full JDs before scoring
+    upgrade_adzuna_descriptions(new_jobs)
 
     if not new_jobs:
         print("\nℹ️  No new listings to process.")
@@ -909,7 +1066,14 @@ def main():
                 employer = "Unclear"
             print(f"     Match: {pct}% ({tier}) | Resume: {resume}")
 
+        status = "New"
+        if CFG["exclude_staffing"] and employer == "Staffing":
+            status = "Skipped"
+        if job.get("watchlist"):
+            notes = "⭐ WATCHLIST COMPANY. " + notes
+
         buffer.append({
+            "status":        status,
             "date_added":    datetime.now().strftime("%Y-%m-%d"),
             "company":       company,
             "title":         title,

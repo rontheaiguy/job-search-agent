@@ -1,0 +1,52 @@
+# Job Search Agent configuration — edit this file, not the code.
+
+titles:
+  - Product Owner
+  - Senior Product Owner
+  - Product Manager
+  - Senior Product Manager
+
+resumes:
+  pm:  Rounaq_Gandhi_Resume_Product_Manager.pdf
+  po:  Rounaq_Gandhi_Resume_Product_Owner.pdf
+  mes: Rounaq_Gandhi_Resume_MES.pdf
+
+# States that get dedicated deep LinkedIn passes each run
+preferred_states:
+  - Illinois
+  - Florida
+
+# Companies checked directly (via JSearch) — guaranteed coverage.
+# Swept weekly (Monday runs) or force anytime with: python3 agent.py --watchlist
+watchlist:
+  - United Airlines
+  - American Airlines
+  - Caterpillar
+  - Lockheed Martin
+  - Google
+  - Microsoft
+  - NVIDIA
+  - Meta
+  - Apple
+  - Netflix
+  - Amgen
+  - Eli Lilly
+  - Lonza
+  - Johnson & Johnson
+  - Bristol Myers Squibb
+  - AbbVie
+  - Baxter
+  - Astellas
+  - Pfizer
+  - Takeda
+  - Rockwell Automation
+  - Emerson
+  - Arthrex
+  - Teva Pharmaceuticals
+  - Modernizing Medicine
+  - Bausch + Lomb
+
+exclude_staffing: false     # true = staffing-agency posts recorded as Skipped
+linkedin_pages_national: 10 # was 5; date-sorted now
+linkedin_pages_state: 4
+max_days_old: 4

@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dotenv beautifulsoup4 openpyxl
+          pip install requests python-dotenv beautifulsoup4 openpyxl pyyaml
 
       - name: Run job search agent
         env:
@@ -33,6 +33,8 @@ jobs:
           USAJOBS_API_KEY: ${{ secrets.USAJOBS_API_KEY }}
           USAJOBS_USER_AGENT: ${{ secrets.USAJOBS_USER_AGENT }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JSEARCH_API_KEY: ${{ secrets.JSEARCH_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python agent.py
 
       - name: Commit updated tracker
