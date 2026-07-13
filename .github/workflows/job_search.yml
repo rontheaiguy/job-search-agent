@@ -2,7 +2,7 @@ name: Job Search Agent
 
 on:
   schedule:
-    - cron: '0 12 * * 1,2,4'   # 7:00am CDT — Mon / Tue / Thu (12:00 UTC)
+    - cron: '7 16 * * 1,2,4'   # ~11:07am CDT Mon/Tue/Thu (16:07 UTC) — off-peak minute
   workflow_dispatch:
 
 permissions:
@@ -34,14 +34,13 @@ jobs:
           USAJOBS_USER_AGENT: ${{ secrets.USAJOBS_USER_AGENT }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           JSEARCH_API_KEY: ${{ secrets.JSEARCH_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python agent.py
 
       - name: Commit updated tracker
         run: |
           git config user.name "job-search-agent[bot]"
           git config user.email "actions@users.noreply.github.com"
-          git pull --rebase origin main
           git add Job_Tracker.xlsx
           git diff --staged --quiet || git commit -m "Tracker update — $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git pull --rebase origin main
           git push
