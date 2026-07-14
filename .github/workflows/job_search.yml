@@ -2,7 +2,7 @@ name: Job Search Agent
 
 on:
   schedule:
-    - cron: '7 16 * * 1,2,4'   # ~11:07am CDT Mon/Tue/Thu (16:07 UTC) — off-peak minute
+    - cron: '7 16 * * 1,2,4'   # ~11:07am CDT — Mon / Tue / Thu (16:07 UTC)
   workflow_dispatch:
 
 permissions:
@@ -32,19 +32,6 @@ jobs:
           echo "Key length: ${#ANTHROPIC_API_KEY}"
           echo -n "$ANTHROPIC_API_KEY" | sha256sum
 
-      - name: Debug — raw Anthropic response (no key exposed, only their reply)
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          echo "HTTP status:"
-          curl -s -o /tmp/resp.json -w "%{http_code}\n" https://api.anthropic.com/v1/messages \
-            -H "x-api-key: $ANTHROPIC_API_KEY" \
-            -H "anthropic-version: 2023-06-01" \
-            -H "content-type: application/json" \
-            -d '{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
-          echo "Response body:"
-          cat /tmp/resp.json
-
       - name: Run job search agent
         env:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
@@ -54,6 +41,7 @@ jobs:
           USAJOBS_USER_AGENT: ${{ secrets.USAJOBS_USER_AGENT }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           JSEARCH_API_KEY: ${{ secrets.JSEARCH_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python agent.py
 
       - name: Commit updated tracker
