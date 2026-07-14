@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Set up your pipeline — job search mission control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0C1116;--panel:#121A21;--panel2:#0F161C;--line:#1E2A33;--line2:#2A3944;
+--ink:#E8EDF1;--mut:#8B98A5;--dim:#5E6B77;--top:#2BD99F;--hi:#4EA8F2;--med:#E8A33D;--low:#66727E;
+--top-glow:rgba(43,217,159,.14)}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 "IBM Plex Sans",sans-serif;min-height:100vh;
+display:flex;align-items:center;justify-content:center;padding:30px 18px;
+background-image:radial-gradient(ellipse 70% 50% at 50% -10%,rgba(78,168,242,.08),transparent),
+linear-gradient(rgba(255,255,255,.015) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.015) 1px,transparent 1px);
+background-size:100% 100%,44px 44px,44px 44px}
+.card{width:100%;max-width:620px;background:linear-gradient(165deg,var(--panel),var(--panel2));
+border:1px solid var(--line);border-radius:20px;padding:34px;box-shadow:0 30px 80px -30px rgba(0,0,0,.7)}
+.proto{position:fixed;top:14px;right:16px;font:500 11px "IBM Plex Mono",monospace;color:var(--med);
+border:1px solid rgba(232,163,61,.35);background:rgba(232,163,61,.08);border-radius:999px;padding:5px 12px;letter-spacing:.08em}
+h1{font:700 26px "Space Grotesk",sans-serif;letter-spacing:-.01em;margin-bottom:6px}
+h1 em{font-style:normal;background:linear-gradient(90deg,var(--top),var(--hi));-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--mut);font-size:14px;margin-bottom:26px}
+.steps{display:flex;gap:8px;margin-bottom:28px}
+.steps i{flex:1;height:4px;border-radius:4px;background:var(--line);font-style:normal;transition:background .3s}
+.steps i.on{background:var(--top)}
+h2{font:500 17px "Space Grotesk",sans-serif;margin-bottom:4px}
+.hint{color:var(--dim);font-size:13px;margin-bottom:16px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.chip{border:1px solid var(--line2);background:var(--panel);border-radius:999px;padding:8px 16px;font-size:13.5px;cursor:pointer;transition:all .15s;user-select:none}
+.chip:hover{border-color:var(--mut)}
+.chip.on{background:var(--top-glow);border-color:var(--top);color:var(--top)}
+input[type=text]{width:100%;border:1px solid var(--line2);background:var(--panel2);border-radius:10px;
+padding:11px 14px;font:14px "IBM Plex Sans",sans-serif;color:var(--ink);outline:none;margin-bottom:14px}
+input[type=text]:focus{border-color:var(--hi)}
+.drop{border:1.5px dashed var(--line2);border-radius:14px;padding:30px 20px;text-align:center;color:var(--mut);
+font-size:14px;cursor:pointer;transition:all .2s;margin-bottom:14px}
+.drop:hover{border-color:var(--top);color:var(--top);background:var(--top-glow)}
+.parse{display:none;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+.parse .row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.parse .row:last-child{border-bottom:none}
+.badge{font:500 12px "IBM Plex Mono",monospace;padding:3px 10px;border-radius:7px;border:1px solid}
+.b-top{color:var(--top);border-color:rgba(43,217,159,.4);background:var(--top-glow)}
+.b-hi{color:var(--hi);border-color:rgba(78,168,242,.35);background:rgba(78,168,242,.1)}
+.b-med{color:var(--med);border-color:rgba(232,163,61,.3);background:rgba(232,163,61,.08)}
+.shimmer{height:10px;border-radius:6px;background:linear-gradient(90deg,var(--line) 25%,var(--line2) 50%,var(--line) 75%);
+background-size:200% 100%;animation:sh 1.2s infinite;margin:8px 0}
+@keyframes sh{to{background-position:-200% 0}}
+.nav{display:flex;justify-content:space-between;margin-top:24px}
+button{font:500 14px "Space Grotesk",sans-serif;border-radius:10px;padding:11px 22px;cursor:pointer;border:1px solid var(--line2);background:var(--panel);color:var(--ink);transition:all .15s}
+button.primary{background:var(--top);border-color:var(--top);color:#06231B}
+button.primary:hover{box-shadow:0 0 24px -4px var(--top)}
+button:disabled{opacity:.35;cursor:default}
+.success{text-align:center;display:none}
+.success .big{font-size:52px;margin-bottom:12px}
+.success a{color:var(--top)}
+.note{font-size:12px;color:var(--dim);margin-top:18px;text-align:center}
+.step{display:none}.step.on{display:block;animation:fade .3s}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}}
+</style>
+</head>
+<body>
+<span class="proto">PROTOTYPE · v0 CONCEPT</span>
+<div class="card">
+<h1>Set up your <em>mission control</em></h1>
+<p class="sub">Three minutes of setup. Then the pipeline hunts while you sleep.</p>
+<div class="steps"><i class="on"></i><i></i><i></i><i></i></div>
+
+<div class="step on" id="s1">
+  <h2>Which roles are you hunting?</h2>
+  <p class="hint">Pick your target titles — the pipeline searches these exactly, three mornings a week.</p>
+  <div class="chips" id="titleChips"></div>
+  <input type="text" id="titleCustom" placeholder="Add another title and press Enter…">
+</div>
+
+<div class="step" id="s2">
+  <h2>Upload your resume(s)</h2>
+  <p class="hint">Every job gets scored against your actual experience — with the reasoning shown, not just a number.</p>
+  <div class="drop" id="resDrop">Drop your resume PDF here (or click) — add multiple variants if you have them</div>
+  <div class="parse" id="parseBox">
+    <div class="shimmer" id="shim1"></div><div class="shimmer" id="shim2"></div>
+    <div id="parseRows" style="display:none">
+      <div class="row"><span>Resume parsed — 7+ yrs product experience detected</span><span class="badge b-top">✓</span></div>
+      <div class="row"><span>Sample scoring vs. live Product Owner posting</span><span class="badge b-top">Top 84</span></div>
+      <div class="row"><span>Sample scoring vs. live Sr PM posting</span><span class="badge b-hi">High 61</span></div>
+      <div class="row"><span>Sample scoring vs. out-of-domain posting</span><span class="badge b-med">Medium 38</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="s3">
+  <h2>Companies you refuse to miss</h2>
+  <p class="hint">Your watchlist gets checked directly every week — guaranteed coverage, not sampling.</p>
+  <div class="chips" id="coChips"></div>
+  <input type="text" id="coCustom" placeholder="Add a company and press Enter…">
+  <h2 style="margin-top:18px">Preferred locations</h2>
+  <p class="hint">These states get dedicated deep searches every run.</p>
+  <div class="chips" id="stChips"></div>
+</div>
+
+<div class="step" id="s4">
+  <h2>Review your pipeline</h2>
+  <p class="hint">This becomes your config — editable anytime, no code required.</p>
+  <div class="parse" style="display:block" id="review"></div>
+</div>
+
+<div class="success" id="done">
+  <div class="big">🛰️</div>
+  <h2 style="margin-bottom:8px">Your pipeline is armed</h2>
+  <p class="hint">First scan: Monday 7:00am. Your Slack will buzz; your dashboard will be waiting.</p>
+  <p style="margin-top:14px"><a href="index.html">See a live dashboard example →</a></p>
+</div>
+
+<div class="nav" id="nav">
+  <button id="back" disabled>Back</button>
+  <button class="primary" id="next">Continue</button>
+</div>
+<p class="note">Prototype: nothing is stored or uploaded. The live version today is configured via a settings file — this screen is the designed onboarding for the multi-user release.</p>
+</div>
+<script>
+const TITLES=["Product Owner","Senior Product Owner","Product Manager","Senior Product Manager","Technical PM","Growth PM"];
+const COS=["United Airlines","Caterpillar","Google","Microsoft","Amgen","AbbVie","Lockheed Martin","Netflix"];
+const STS=["Illinois","Florida","Texas","Remote only","California","New York"];
+const sel={titles:new Set(["Product Owner","Product Manager"]),cos:new Set(["United Airlines","Caterpillar"]),sts:new Set(["Illinois","Florida"])};
+function chips(elId,items,set){
+  const el=document.getElementById(elId);
+  el.innerHTML=items.map(t=>`<span class="chip${set.has(t)?' on':''}" data-v="${t}">${t}</span>`).join('');
+  el.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{
+    set.has(c.dataset.v)?set.delete(c.dataset.v):set.add(c.dataset.v);
+    c.classList.toggle('on')});
+}
+chips('titleChips',TITLES,sel.titles);chips('coChips',COS,sel.cos);chips('stChips',STS,sel.sts);
+function wireCustom(inputId,listId,set,arr){
+  document.getElementById(inputId).addEventListener('keydown',e=>{
+    if(e.key==='Enter'&&e.target.value.trim()){arr.push(e.target.value.trim());set.add(e.target.value.trim());
+      chips(listId,arr,set);e.target.value=''}});
+}
+wireCustom('titleCustom','titleChips',sel.titles,TITLES);
+wireCustom('coCustom','coChips',sel.cos,COS);
+let step=1;const MAX=4;
+const stepsBar=document.querySelectorAll('.steps i');
+function show(){
+  document.querySelectorAll('.step').forEach((s,i)=>s.classList.toggle('on',i===step-1));
+  stepsBar.forEach((b,i)=>b.classList.toggle('on',i<step));
+  document.getElementById('back').disabled=step===1;
+  document.getElementById('next').textContent=step===MAX?'Launch my pipeline':'Continue';
+  if(step===4){
+    document.getElementById('review').innerHTML=
+      `<div class="row"><span>Target titles</span><span>${[...sel.titles].join(', ')||'—'}</span></div>
+       <div class="row"><span>Watchlist</span><span>${[...sel.cos].slice(0,4).join(', ')}${sel.cos.size>4?' +'+(sel.cos.size-4):''}</span></div>
+       <div class="row"><span>Preferred locations</span><span>${[...sel.sts].join(', ')||'—'}</span></div>
+       <div class="row"><span>Scan schedule</span><span>Mon · Tue · Thu · 7:00am</span></div>
+       <div class="row"><span>Est. running cost</span><span class="badge b-hi">~$5–10 / month</span></div>`;
+  }
+}
+document.getElementById('next').onclick=()=>{
+  if(step<MAX){step++;show()}
+  else{document.querySelectorAll('.step,.nav').forEach(e=>e.style.display='none');
+    document.querySelector('.steps').style.display='none';
+    document.getElementById('done').style.display='block'}
+};
+document.getElementById('back').onclick=()=>{if(step>1){step--;show()}};
+document.getElementById('resDrop').onclick=fakeParse;
+document.getElementById('resDrop').ondragover=e=>e.preventDefault();
+document.getElementById('resDrop').ondrop=e=>{e.preventDefault();fakeParse()};
+function fakeParse(){
+  const box=document.getElementById('parseBox');box.style.display='block';
+  document.getElementById('resDrop').textContent='Rounaq_Gandhi_Resume.pdf ✓ — analyzing…';
+  setTimeout(()=>{document.getElementById('shim1').style.display='none';
+    document.getElementById('shim2').style.display='none';
+    document.getElementById('parseRows').style.display='block';
+    document.getElementById('resDrop').textContent='Resume analyzed ✓ — drop another variant or continue';},1600);
+}
+show();
+</script>
+</body>
+</html>
