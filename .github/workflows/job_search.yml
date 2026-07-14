@@ -32,6 +32,19 @@ jobs:
           echo "Key length: ${#ANTHROPIC_API_KEY}"
           echo -n "$ANTHROPIC_API_KEY" | sha256sum
 
+      - name: Debug — raw Anthropic response (no key exposed, only their reply)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "HTTP status:"
+          curl -s -o /tmp/resp.json -w "%{http_code}\n" https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d '{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
+          echo "Response body:"
+          cat /tmp/resp.json
+
       - name: Run job search agent
         env:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
