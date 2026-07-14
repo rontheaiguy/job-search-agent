@@ -781,6 +781,11 @@ def analyze_job_with_claude(job):
                 timeout=60,
             )
 
+            if response.status_code in (401, 403):
+                raise SystemExit(
+                    "\n❌ ANTHROPIC API KEY REJECTED (401/403). The key this run is using is "
+                    "invalid — fix the ANTHROPIC_API_KEY GitHub Secret (or .env locally) and "
+                    "re-run. Aborting so no unscored rows are written.")
             if response.status_code in (429, 500, 502, 503, 529):
                 wait = int(response.headers.get("retry-after", 0)) or (5 * (2 ** attempt))
                 print(f"     ⏳ API busy ({response.status_code}) — retrying in {wait}s...")
@@ -991,11 +996,39 @@ def send_slack_summary(saved_jobs):
 
 # ── Main orchestrator ─────────────────────────────────────────────────────────
 
+def check_anthropic_auth():
+    """One tiny API call before doing anything expensive. Aborts loudly on bad auth."""
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY or "",
+                     "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5", "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "ping"}]},
+            timeout=30)
+        if resp.status_code in (401, 403):
+            raise SystemExit(
+                "\n❌ PRE-FLIGHT FAILED: Anthropic API key rejected (401/403). "
+                "Fix ANTHROPIC_API_KEY before running — aborting with nothing fetched.")
+        if resp.status_code == 400 and "credit" in resp.text.lower():
+            raise SystemExit(
+                "\n❌ PRE-FLIGHT FAILED: Anthropic credit balance too low. "
+                "Add credits at console.anthropic.com/billing — aborting.")
+        print("✅ Anthropic auth pre-flight passed.")
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"⚠️  Pre-flight inconclusive ({e}) — continuing.")
+
+
 def main():
     print("\n========================================")
     print("  Job Search Agent v2 — Starting Run")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("========================================\n")
+
+    check_anthropic_auth()
 
     # 1. Pull raw jobs: national sources + preferred-state passes + watchlist
     raw_jobs = (fetch_jobs_from_adzuna()
