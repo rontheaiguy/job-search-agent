@@ -25,6 +25,13 @@ jobs:
         run: |
           pip install requests python-dotenv beautifulsoup4 openpyxl pyyaml
 
+      - name: Debug — verify secret fingerprint (safe, no key exposed)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "Key length: ${#ANTHROPIC_API_KEY}"
+          echo -n "$ANTHROPIC_API_KEY" | sha256sum
+
       - name: Run job search agent
         env:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
